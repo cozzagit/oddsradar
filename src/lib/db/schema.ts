@@ -302,6 +302,27 @@ export const ingestionRuns = pgTable(
   }),
 );
 
+export const eventLiveStates = pgTable(
+  'event_live_states',
+  {
+    id: bigint('id', { mode: 'bigint' }).generatedAlwaysAsIdentity().primaryKey(),
+    eventId: integer('event_id')
+      .notNull()
+      .references(() => events.id, { onDelete: 'cascade' }),
+    takenAt: timestamp('taken_at', { withTimezone: true }).defaultNow().notNull(),
+    homeGoals: integer('home_goals'),
+    awayGoals: integer('away_goals'),
+    elapsedMin: integer('elapsed_min'),
+    status: text('status'),
+    redCardsHome: integer('red_cards_home').default(0),
+    redCardsAway: integer('red_cards_away').default(0),
+    raw: jsonb('raw'),
+  },
+  (t) => ({
+    idxEvTime: index('idx_els_event_time').on(t.eventId, t.takenAt),
+  }),
+);
+
 export const mappingReview = pgTable('mapping_review', {
   id: serial('id').primaryKey(),
   entityType: varchar('entity_type', { length: 32 }).notNull(), // team | event | market

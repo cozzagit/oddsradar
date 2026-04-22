@@ -12,6 +12,11 @@ import { detectPriceChanges, type TimedOdd } from '../src/lib/detectors/price-ch
 import { persistSignalIfNew, expireOldSignals } from '../src/lib/signals/persist';
 import { bookLabel, selectionLabel } from '../src/lib/signals/actionable';
 import { sendTelegram, telegramEnabled } from '../src/lib/notify/telegram';
+import {
+  crossBookConcordance,
+  getMatchStateWindow,
+  matchStateChanged,
+} from '../src/lib/signals/live-context';
 
 const SITE_URL = process.env.NEXTAUTH_URL ?? 'http://localhost:3041';
 const MAX_TG = Number(process.env.MAX_TELEGRAM_PER_RUN ?? '6');
@@ -146,9 +151,38 @@ async function main() {
 
   let persisted = 0;
   let notified = 0;
+  let skippedScoreChange = 0;
+  let skippedMarketConsensus = 0;
+  const CONCORDANCE_THRESHOLD = Number(process.env.LIVE_CONCORDANCE_THRESHOLD ?? '0.4');
+
+  const baselineStart = new Date(Date.now() - BASELINE_MIN * 60_000);
+  const windowEnd = new Date();
 
   for (const c of candidates) {
     const isLiveNow = c.meta.isLiveNow;
+
+    // FILTRO 1: score/cartellini cambiati → movimento spiegato dal campo
+    const state = await getMatchStateWindow(c.eventId, baselineStart, windowEnd);
+    const stateCheck = matchStateChanged(state);
+    if (stateCheck.changed) {
+      skippedScoreChange++;
+      continue;
+    }
+
+    // FILTRO 2: altri book hanno seguito lo stesso movimento → mercato, non losco
+    const concord = await crossBookConcordance({
+      eventId: c.eventId,
+      marketId: c.marketId,
+      selectionId: c.sig.selectionId,
+      targetBookSlug: c.sig.bookSlug,
+      windowStart: baselineStart,
+      windowEnd,
+      targetChangePct: c.sig.changePct,
+    });
+    if (concord.frac >= CONCORDANCE_THRESHOLD) {
+      skippedMarketConsensus++;
+      continue;
+    }
     const payload = {
       kind: 'price_change',
       selectionSlug: c.sig.selectionSlug,
@@ -171,6 +205,10 @@ async function main() {
       currentOdd: c.sig.currentOdd,
       changePct: c.sig.changePct,
       isLive: isLiveNow,
+      concordance: concord.frac,
+      concordanceMovedBooks: concord.movedBooks,
+      concordanceTotalBooks: concord.totalBooks,
+      liveElapsed: c.meta.isLiveNow ? undefined : undefined,
     };
 
     const newId = await persistSignalIfNew({
@@ -196,6 +234,10 @@ async function main() {
         minute: '2-digit',
         timeZone: 'Europe/Rome',
       });
+      const concordLabel =
+        concord.totalBooks > 0
+          ? `<i>${concord.movedBooks}/${concord.totalBooks} altri book concordi</i>`
+          : `<i>unico book con dati</i>`;
       const text =
         `⚫ <b>MOVIMENTO LOSCO</b> ${arrow} ${(c.sig.changePct * 100).toFixed(1)}%\n` +
         `${liveTag}${c.meta.home} – ${c.meta.away}\n` +
@@ -203,7 +245,7 @@ async function main() {
         `👉 <b>${selectionLabel(c.sig.selectionSlug, c.meta.home, c.meta.away)}</b> su <b>${bookLabel(c.sig.bookSlug)}</b>\n` +
         `<code>${c.sig.previousOdd.toFixed(2)}</code> → <code>${c.sig.currentOdd.toFixed(2)}</code> ` +
         `(${c.sig.direction === 'drop' ? 'scesa' : 'salita'} di <b>${Math.abs(c.sig.changePct * 100).toFixed(1)}%</b>)\n\n` +
-        `Baseline ~${c.sig.ageMinutesOld}min fa (${c.sig.samplesOld} snapshot), ora ${c.sig.recentSamples} snapshot recenti.\n\n` +
+        `${concordLabel} · score invariato nella finestra\n\n` +
         `<a href="${SITE_URL}/signals">Apri</a>`;
       const ok = await sendTelegram(text);
       if (ok) notified++;
@@ -211,7 +253,7 @@ async function main() {
   }
 
   console.log(
-    `  ✓ price_change=${persisted} tg=${notified} in ${((Date.now() - t0) / 1000).toFixed(1)}s`,
+    `  ✓ losco=${persisted} skipped(score)=${skippedScoreChange} skipped(mkt)=${skippedMarketConsensus} tg=${notified} in ${((Date.now() - t0) / 1000).toFixed(1)}s`,
   );
 }
 

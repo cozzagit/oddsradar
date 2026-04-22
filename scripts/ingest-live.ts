@@ -117,6 +117,30 @@ async function main() {
       elapsed: fx.fixture.status.elapsed ?? 0,
     });
 
+    // Persist event state (punteggio, cartellini rossi, minuto)
+    const goals = (fx as unknown as { goals?: { home: number | null; away: number | null } }).goals;
+    const rawFx = fx as unknown as { events?: Array<{ type?: string; detail?: string; team?: { id?: number } }> };
+    const matchEvents = rawFx.events ?? [];
+    let redHome = 0;
+    let redAway = 0;
+    for (const me of matchEvents) {
+      if ((me.type ?? '').toLowerCase() === 'card' && (me.detail ?? '').toLowerCase().includes('red')) {
+        if (me.team?.id === fx.teams.home.id) redHome++;
+        else if (me.team?.id === fx.teams.away.id) redAway++;
+      }
+    }
+    await db.insert(schema.eventLiveStates).values({
+      eventId,
+      takenAt,
+      homeGoals: goals?.home ?? null,
+      awayGoals: goals?.away ?? null,
+      elapsedMin: fx.fixture.status.elapsed ?? null,
+      status: fx.fixture.status.short ?? null,
+      redCardsHome: redHome,
+      redCardsAway: redAway,
+      raw: { events: matchEvents.slice(0, 10) } as unknown as Record<string, unknown>,
+    });
+
     // `oi.odds` è array di market; ogni market ha .values con value/odd/handicap/main
     // Prendiamo SOLO main=true e market di nostro interesse
     type AfOddMarket = { id: number; name: string; values: Array<{ value: string; odd: string; handicap?: string; main?: boolean | null; suspended?: boolean }> };
