@@ -48,5 +48,15 @@ module.exports = {
       autorestart: true,
       max_memory_restart: '400M',
     },
+    {
+      name: 'oddsradar-divergence',
+      cwd: '/var/www/oddsradar',
+      script: 'node_modules/.bin/tsx',
+      args: 'scripts/scheduler-divergence.ts',
+      env: { NODE_ENV: 'production', DIV_INTERVAL_SEC: '180' },
+      autorestart: true,
+      max_memory_restart: '400M',
+      kill_timeout: 10000,
+    },
   ],
 };
