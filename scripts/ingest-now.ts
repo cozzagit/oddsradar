@@ -44,7 +44,7 @@ if (!TOA_KEY) {
 }
 
 const BASE = 'https://api.the-odds-api.com/v4';
-const SITE_URL = process.env.NEXTAUTH_URL ?? 'http://localhost:3040';
+const SITE_URL = process.env.NEXTAUTH_URL ?? 'http://localhost:3041';
 
 const TOA_SPORTS: Array<{ key: string; sportSlug: string; competition: string }> = [
   { key: 'soccer_italy_serie_a', sportSlug: 'soccer', competition: 'Serie A' },

@@ -18,7 +18,7 @@ STEAM_WINDOW_MIN=5
 STEAM_MOVE_PCT=8
 ARB_EDGE_MIN=0.005
 NODE_ENV=production
-PORT=3040
+PORT=3041
 EOF
 chmod 600 /var/www/oddsradar/.env
 echo "env written"

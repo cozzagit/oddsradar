@@ -86,7 +86,7 @@ pip install -r requirements.txt
 
 ### 7. Run
 ```bash
-# Terminal 1 — Next.js (porta 3040)
+# Terminal 1 — Next.js (porta 3041)
 npm run dev
 
 # Terminal 2 — Scraper orchestrator
@@ -96,7 +96,7 @@ cd scrapers && .venv/bin/python -m scrapers.workers.orchestrator
 redis-server
 ```
 
-Apri http://localhost:3040 → login con l'email in `ALLOWED_EMAILS`.
+Apri http://localhost:3041 → login con l'email in `ALLOWED_EMAILS`.
 
 ## Deploy VPS
 
