@@ -19,7 +19,9 @@
     "ingest:live": "tsx scripts/ingest-live.ts",
     "scheduler:live": "tsx scripts/scheduler-live.ts",
     "divergence:now": "tsx scripts/ingest-scrape-live.ts",
-    "scheduler:divergence": "tsx scripts/scheduler-divergence.ts"
+    "scheduler:divergence": "tsx scripts/scheduler-divergence.ts",
+    "digest:now": "tsx scripts/send-digest.ts",
+    "scheduler:digest": "tsx scripts/scheduler-digest.ts"
   },
   "dependencies": {
     "@auth/drizzle-adapter": "^1.11.2",

@@ -58,5 +58,15 @@ module.exports = {
       max_memory_restart: '400M',
       kill_timeout: 10000,
     },
+    {
+      name: 'oddsradar-digest',
+      cwd: '/var/www/oddsradar',
+      script: 'node_modules/.bin/tsx',
+      args: 'scripts/scheduler-digest.ts',
+      env: { NODE_ENV: 'production', DIGEST_WINDOW_MIN: '30' },
+      autorestart: true,
+      max_memory_restart: '300M',
+      kill_timeout: 10000,
+    },
   ],
 };

@@ -47,30 +47,38 @@ async function main() {
     .where(gte(schema.oddsSnapshots.takenAt, since))
     .orderBy(desc(schema.oddsSnapshots.takenAt));
 
-  // Map eventId → meta
+  // Map eventId → meta.
+  // isLiveNow: evento considerato live SOLO se kickoff è tra 5 min fa e 2.5h fa
+  // E almeno uno snapshot live negli ultimi 15 min.
   const eventIds = Array.from(new Set(rows.map((r) => r.eventId)));
   const eventsMeta = new Map<
     number,
     { home: string; away: string; kickoff: Date; competition: string; isLiveNow: boolean }
   >();
+  const recentLiveCutoff = Date.now() - 15 * 60_000;
+  const liveByEv = new Map<number, boolean>();
+  for (const r of rows) {
+    if (r.isInPlay && r.takenAt.getTime() >= recentLiveCutoff) liveByEv.set(r.eventId, true);
+  }
+
   if (eventIds.length > 0) {
     const allTeams = await db.select().from(schema.teams);
     const teamName = new Map(allTeams.map((t) => [t.id, t.nameCanonical]));
     const allComp = await db.select().from(schema.competitions);
     const compName = new Map(allComp.map((c) => [c.id, c.name]));
     const evRows = await db.select().from(schema.events);
-    const liveByEv = new Map<number, boolean>();
-    for (const r of rows) {
-      if (r.isInPlay) liveByEv.set(r.eventId, true);
-    }
+    const now = Date.now();
     for (const ev of evRows) {
       if (!eventIds.includes(ev.id)) continue;
+      const minutesAfterKickoff = (now - ev.kickoffUtc.getTime()) / 60_000;
+      const plausiblyInPlay = minutesAfterKickoff > 5 && minutesAfterKickoff < 150;
+      const isLiveNow = Boolean(liveByEv.get(ev.id)) && plausiblyInPlay;
       eventsMeta.set(ev.id, {
         home: teamName.get(ev.homeTeamId) ?? '?',
         away: teamName.get(ev.awayTeamId) ?? '?',
         kickoff: ev.kickoffUtc,
         competition: compName.get(ev.competitionId) ?? '?',
-        isLiveNow: liveByEv.get(ev.id) ?? false,
+        isLiveNow,
       });
     }
   }
@@ -118,8 +126,8 @@ async function main() {
   for (const [, entry] of byEvMkt) {
     const meta = eventsMeta.get(entry.eventId);
     if (!meta) continue;
-    // Se l'evento è già passato da più di 3 ore, skip
-    if (meta.kickoff.getTime() < Date.now() - 3 * 3600 * 1000) continue;
+    // MOVIMENTO LOSCO solo per eventi LIVE ora.
+    if (!meta.isLiveNow) continue;
 
     const signals = detectPriceChanges(entry.history, {
       thresholdPct: THRESHOLD,
