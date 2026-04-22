@@ -54,8 +54,14 @@ const MINORS = new Set([
   'mozzart', 'meridianbet', 'superbet', 'betano', 'sportybet',
 ]);
 
-function stripVig(odds: LatestOdd[]): Map<number, number> {
-  // Multiplicative devigging per book: prob_true_sel = (1/odd_sel) / Σ(1/odd_i)
+/**
+ * Multiplicative devigging per book.
+ * IMPORTANTE: un book è usato SOLO se copre tutte le `expectedSelections`
+ * del mercato (per O/U serve 2, per 1X2 serve 3). Altrimenti il sum of
+ * implied è < 1 e la fair prob esce gonfiata (bug visto in produzione:
+ * fair=0.48 con quota 4.52 → edge 118%).
+ */
+function stripVig(odds: LatestOdd[], expectedSelections: number): Map<number, number> {
   const byBook = new Map<string, LatestOdd[]>();
   for (const o of odds) {
     if (!byBook.has(o.bookSlug)) byBook.set(o.bookSlug, []);
@@ -63,8 +69,10 @@ function stripVig(odds: LatestOdd[]): Map<number, number> {
   }
   const bookFair: Map<number, number[]> = new Map();
   for (const [, bookOdds] of byBook) {
+    if (bookOdds.length < expectedSelections) continue; // skip book incompleti
     const impliedSum = bookOdds.reduce((acc, o) => acc + 1 / o.odd, 0);
-    if (impliedSum <= 0) continue;
+    // sanity: sum dovrebbe essere > 1.0 (vig positivo). Scarto se outlier.
+    if (impliedSum < 0.95 || impliedSum > 1.25) continue;
     for (const o of bookOdds) {
       const fair = 1 / o.odd / impliedSum;
       if (!bookFair.has(o.selectionId)) bookFair.set(o.selectionId, []);
@@ -135,12 +143,19 @@ export function detectBestBets(
 ): BestBetRecommendation[] {
   if (allOdds.length < 3) return [];
 
-  const fairAll = stripVig(allOdds);
-  const sharpOdds = allOdds.filter((o) => SHARP.has(o.bookSlug));
-  if (sharpOdds.length < 2) return []; // servono almeno 2 sharp per fair affidabile
-  const fairSharp = stripVig(sharpOdds);
-
+  // Determina numero atteso di selezioni del mercato dai dati stessi.
   const sels = selectionsOf(allOdds);
+  const expectedSelections = sels.size;
+  if (expectedSelections < 2) return [];
+
+  const fairAll = stripVig(allOdds, expectedSelections);
+  const sharpOdds = allOdds.filter((o) => SHARP.has(o.bookSlug));
+  // Serve almeno 1 book sharp COMPLETO per fair affidabile.
+  const sharpBookCount = new Set(sharpOdds.map((o) => o.bookSlug)).size;
+  if (sharpBookCount < 1) return [];
+  const fairSharp = stripVig(sharpOdds, expectedSelections);
+  if (fairSharp.size === 0) return []; // nessun book sharp completo
+
   const steam = steamScoresFor(history);
   const results: BestBetRecommendation[] = [];
 
@@ -168,16 +183,24 @@ export function detectBestBets(
     const minorOdds = bookOdds.filter((o) => MINORS.has(o.bookSlug));
     const minorMean = minorOdds.length > 0 ? minorOdds.reduce((a, b) => a + b.odd, 0) / minorOdds.length : 0;
 
-    // Sharp edge vs soft: se i soft pagano MEGLIO del fair (quota > fairOdd), soft è in ritardo.
-    // scoring positivo = vantaggio per chi gioca la selection sul soft.
-    const sharpEdgeVsSoft = softMean > 0 ? (softMean * fair - 1) : 0;
+    // Sharp edge vs soft: almeno 2 soft per ridurre varianza.
+    // Cap edge a 20% per tagliare outlier/bug.
+    let sharpEdgeVsSoft = 0;
+    if (softOdds.length >= 2 && softMean > 0) {
+      const raw = softMean * fair - 1;
+      sharpEdgeVsSoft = Math.max(-0.2, Math.min(0.2, raw));
+    }
 
     // Minors edge vs sharp: minori pagano molto di più dello sharp → anomalia sospetta
-    const sharpMean = sharpOdds.length > 0
-      ? sharpOdds.filter((o) => o.selectionId === selId).reduce((a, b) => a + b.odd, 0) /
-        Math.max(1, sharpOdds.filter((o) => o.selectionId === selId).length)
+    const sharpOnSel = sharpOdds.filter((o) => o.selectionId === selId);
+    const sharpMeanSel = sharpOnSel.length > 0
+      ? sharpOnSel.reduce((a, b) => a + b.odd, 0) / sharpOnSel.length
       : 0;
-    const minorsEdgeVsSharp = sharpMean > 0 && minorMean > 0 ? (minorMean - sharpMean) / sharpMean : 0;
+    let minorsEdgeVsSharp = 0;
+    if (minorOdds.length >= 3 && sharpMeanSel > 0 && minorMean > 0) {
+      const raw = (minorMean - sharpMeanSel) / sharpMeanSel;
+      minorsEdgeVsSharp = Math.max(-0.2, Math.min(0.2, raw));
+    }
 
     const steamScore = steam.get(selId) ?? 0;
 
@@ -188,11 +211,11 @@ export function detectBestBets(
     // 1) Fair prob elevata → base confidence
     confidence += Math.min(40, fair * 80);
     reasoning.push(
-      `Probabilità reale stimata: <b>${(fair * 100).toFixed(1)}%</b> (${sharpOdds.length / 3} sharp).`,
+      `Probabilità reale stimata: <b>${(fair * 100).toFixed(1)}%</b> (${sharpBookCount} sharp book).`,
     );
 
     // 2) Soft in ritardo (vantaggio)
-    if (sharpEdgeVsSoft > 0.015) {
+    if (sharpEdgeVsSoft > 0.015 && softOdds.length >= 2) {
       const bonus = Math.min(25, sharpEdgeVsSoft * 200);
       confidence += bonus;
       reasoning.push(
