@@ -44,10 +44,6 @@ async function main() {
   const rows = await db
     .select({
       eventId: schema.oddsSnapshots.eventId,
-      home: schema.teams.nameCanonical,
-      away: schema.teams.nameCanonical,
-      kickoff: schema.events.kickoffUtc,
-      competition: schema.competitions.name,
       marketId: schema.oddsSnapshots.marketId,
       marketName: schema.markets.name,
       selectionId: schema.oddsSnapshots.selectionId,
@@ -61,25 +57,20 @@ async function main() {
     .innerJoin(schema.books, eq(schema.books.id, schema.oddsSnapshots.bookId))
     .innerJoin(schema.markets, eq(schema.markets.id, schema.oddsSnapshots.marketId))
     .innerJoin(schema.selections, eq(schema.selections.id, schema.oddsSnapshots.selectionId))
-    .innerJoin(schema.events, eq(schema.events.id, schema.oddsSnapshots.eventId))
-    .innerJoin(schema.competitions, eq(schema.competitions.id, schema.events.competitionId))
     .where(gte(schema.oddsSnapshots.takenAt, since))
     .orderBy(desc(schema.oddsSnapshots.takenAt));
 
-  // Need team names correct: do a specialized select (above has alias collision)
-  // Re-query teams separately per eventId for efficiency
+  // Risolvo home/away/competition separatamente.
   const eventIds = Array.from(new Set(rows.map((r) => r.eventId)));
   const eventsMeta = new Map<number, { home: string; away: string; kickoff: Date; competition: string }>();
   if (eventIds.length > 0) {
-    const evRows = await db
-      .select()
-      .from(schema.events)
-      .where(gte(schema.events.kickoffUtc, new Date(Date.now() - 6 * 3600 * 1000)));
     const allTeams = await db.select().from(schema.teams);
     const teamName = new Map(allTeams.map((t) => [t.id, t.nameCanonical]));
     const allCompetitions = await db.select().from(schema.competitions);
     const compName = new Map(allCompetitions.map((c) => [c.id, c.name]));
+    const evRows = await db.select().from(schema.events);
     for (const ev of evRows) {
+      if (!eventIds.includes(ev.id)) continue;
       eventsMeta.set(ev.id, {
         home: teamName.get(ev.homeTeamId) ?? '?',
         away: teamName.get(ev.awayTeamId) ?? '?',
