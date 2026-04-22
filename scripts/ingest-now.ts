@@ -19,14 +19,9 @@ import type { LatestOdd } from '../src/lib/detectors/arbitrage';
 import { persistSignalIfNew, expireOldSignals } from '../src/lib/signals/persist';
 import { bookLabel, selectionLabel } from '../src/lib/signals/actionable';
 import { formatBestBetMessage, sendTelegram, telegramEnabled } from '../src/lib/notify/telegram';
+import { fetchSportOdds, poolStatus } from '../src/lib/sources/the-odds-api';
 
-const TOA_KEY = process.env.THE_ODDS_API_KEY;
-if (!TOA_KEY) {
-  console.error('Missing THE_ODDS_API_KEY');
-  process.exit(1);
-}
 const SITE_URL = process.env.NEXTAUTH_URL ?? 'http://localhost:3041';
-const BASE = 'https://api.the-odds-api.com/v4';
 
 const TOA_SPORTS = [
   { key: 'soccer_italy_serie_a', sportSlug: 'soccer', competition: 'Serie A' },
@@ -71,17 +66,12 @@ type ToaEvent = {
 };
 
 async function fetchSport(sportKey: string): Promise<ToaEvent[]> {
-  const url =
-    `${BASE}/sports/${sportKey}/odds?apiKey=${TOA_KEY}` +
-    `&regions=eu,uk,us,au&markets=h2h,totals&oddsFormat=decimal`;
-  const r = await fetch(url);
-  if (!r.ok) {
-    console.warn(`  ! ${sportKey}: HTTP ${r.status}`);
+  const res = await fetchSportOdds(sportKey);
+  if (!res) {
+    console.warn(`  ! ${sportKey}: skipped (all keys exhausted or HTTP error)`);
     return [];
   }
-  const rest = r.headers.get('x-requests-remaining');
-  console.log(`  ${sportKey}: ok (quota ${rest})`);
-  return (await r.json()) as ToaEvent[];
+  return res.data as ToaEvent[];
 }
 
 function fmtIT(d: Date): string {
@@ -104,6 +94,7 @@ const MAX_TELEGRAM_PER_RUN = Number(process.env.MAX_TELEGRAM_PER_RUN ?? '8');
 async function main() {
   const t0 = Date.now();
   console.log(`[${new Date().toISOString()}] === ingest+bestbet ===`);
+  console.log('  TheOddsAPI pool:', poolStatus().map((s) => s.key + (s.exhausted ? '(OUT)' : '')).join(', '));
 
   const expired = await expireOldSignals();
   if (expired > 0) console.log(`  expired ${expired} old signals`);
