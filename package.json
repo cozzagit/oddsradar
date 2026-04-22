@@ -12,7 +12,8 @@
     "db:seed": "tsx src/lib/db/seed.ts",
     "db:ext": "psql $DATABASE_URL -f drizzle/migrations/0001_extensions.sql",
     "db:timescale": "psql $DATABASE_URL -f drizzle/migrations/0002_timescale.sql",
-    "hash:password": "tsx scripts/hash-password.ts"
+    "hash:password": "tsx scripts/hash-password.ts",
+    "ingest:now": "tsx scripts/ingest-now.ts"
   },
   "dependencies": {
     "@auth/drizzle-adapter": "^1.11.2",
@@ -27,6 +28,7 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "date-fns": "^4.1.0",
+    "dotenv": "^17.4.2",
     "drizzle-orm": "^0.45.2",
     "ioredis": "^5.10.1",
     "lucide-react": "^1.8.0",

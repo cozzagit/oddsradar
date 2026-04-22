@@ -1,0 +1,139 @@
+import { and, eq, sql } from 'drizzle-orm';
+import { db, schema } from '@/lib/db';
+
+export async function findOrCreateTeam(
+  sportId: number,
+  rawName: string,
+): Promise<{ id: number; created: boolean }> {
+  const normalized = rawName.trim();
+  const lc = normalized.toLowerCase();
+
+  const [alias] = await db
+    .select({ id: schema.teamAliases.teamId })
+    .from(schema.teamAliases)
+    .where(eq(sql`lower(${schema.teamAliases.alias})`, lc))
+    .limit(1);
+  if (alias) return { id: alias.id, created: false };
+
+  const [existing] = await db
+    .select({ id: schema.teams.id })
+    .from(schema.teams)
+    .where(
+      and(
+        eq(schema.teams.sportId, sportId),
+        eq(sql`lower(${schema.teams.nameCanonical})`, lc),
+      ),
+    )
+    .limit(1);
+  if (existing) {
+    await db
+      .insert(schema.teamAliases)
+      .values({ teamId: existing.id, alias: normalized, confidence: 1, verified: true })
+      .onConflictDoNothing();
+    return { id: existing.id, created: false };
+  }
+
+  const [created] = await db
+    .insert(schema.teams)
+    .values({ sportId, nameCanonical: normalized })
+    .returning({ id: schema.teams.id });
+  await db
+    .insert(schema.teamAliases)
+    .values({ teamId: created.id, alias: normalized, confidence: 1, verified: true });
+  return { id: created.id, created: true };
+}
+
+export async function findOrCreateCompetition(
+  sportId: number,
+  name: string,
+): Promise<number> {
+  const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  const [existing] = await db
+    .select({ id: schema.competitions.id })
+    .from(schema.competitions)
+    .where(
+      and(eq(schema.competitions.sportId, sportId), eq(schema.competitions.slug, slug)),
+    )
+    .limit(1);
+  if (existing) return existing.id;
+  const [created] = await db
+    .insert(schema.competitions)
+    .values({ sportId, slug, name })
+    .returning({ id: schema.competitions.id });
+  return created.id;
+}
+
+export async function findOrCreateEvent(
+  competitionId: number,
+  homeTeamId: number,
+  awayTeamId: number,
+  kickoffUtc: Date,
+): Promise<number> {
+  const [existing] = await db
+    .select({ id: schema.events.id })
+    .from(schema.events)
+    .where(
+      and(
+        eq(schema.events.competitionId, competitionId),
+        eq(schema.events.homeTeamId, homeTeamId),
+        eq(schema.events.awayTeamId, awayTeamId),
+        eq(schema.events.kickoffUtc, kickoffUtc),
+      ),
+    )
+    .limit(1);
+  if (existing) return existing.id;
+  const [created] = await db
+    .insert(schema.events)
+    .values({ competitionId, homeTeamId, awayTeamId, kickoffUtc })
+    .onConflictDoNothing()
+    .returning({ id: schema.events.id });
+  if (created) return created.id;
+  // race: re-read
+  const [again] = await db
+    .select({ id: schema.events.id })
+    .from(schema.events)
+    .where(
+      and(
+        eq(schema.events.competitionId, competitionId),
+        eq(schema.events.homeTeamId, homeTeamId),
+        eq(schema.events.awayTeamId, awayTeamId),
+        eq(schema.events.kickoffUtc, kickoffUtc),
+      ),
+    );
+  return again.id;
+}
+
+/** Map The Odds API market + outcome names to our (market_id, selection_id). */
+export function toaMarketSelection(
+  markets: Array<{ id: number; slug: string }>,
+  selections: Array<{ id: number; slug: string; marketId: number }>,
+  toaMarketKey: string,
+  outcomeName: string,
+  homeTeamName: string,
+  awayTeamName: string,
+): { marketId: number; selectionId: number } | null {
+  if (toaMarketKey === 'h2h') {
+    const market = markets.find((m) => m.slug === 'match_1x2');
+    if (!market) return null;
+    const n = outcomeName.trim();
+    let selSlug: string | null = null;
+    if (n === homeTeamName) selSlug = 'home';
+    else if (n === awayTeamName) selSlug = 'away';
+    else if (/^draw$/i.test(n)) selSlug = 'draw';
+    if (!selSlug) return null;
+    const sel = selections.find((s) => s.marketId === market.id && s.slug === selSlug);
+    if (!sel) return null;
+    return { marketId: market.id, selectionId: sel.id };
+  }
+  if (toaMarketKey === 'totals') {
+    const market = markets.find((m) => m.slug === 'over_under_2_5');
+    if (!market) return null;
+    const n = outcomeName.trim().toLowerCase();
+    const selSlug = n.startsWith('over') ? 'over' : n.startsWith('under') ? 'under' : null;
+    if (!selSlug) return null;
+    const sel = selections.find((s) => s.marketId === market.id && s.slug === selSlug);
+    if (!sel) return null;
+    return { marketId: market.id, selectionId: sel.id };
+  }
+  return null;
+}
