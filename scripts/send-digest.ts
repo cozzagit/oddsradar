@@ -8,6 +8,7 @@ import { and, desc, gte, eq, inArray } from 'drizzle-orm';
 import { db, schema } from '../src/lib/db';
 import { selectionLabel } from '../src/lib/signals/actionable';
 import { sendTelegram, telegramEnabled } from '../src/lib/notify/telegram';
+import { isNotificationsEnabled } from '../src/lib/settings';
 
 const SITE_URL = process.env.NEXTAUTH_URL ?? 'http://localhost:3041';
 const WINDOW_MIN = Number(process.env.DIGEST_WINDOW_MIN ?? '30');
@@ -64,6 +65,10 @@ async function main() {
   console.log(`[${new Date().toISOString()}] === DIGEST ${WINDOW_MIN}min ===`);
   if (!telegramEnabled()) {
     console.log('telegram not configured, skip');
+    return;
+  }
+  if (!(await isNotificationsEnabled())) {
+    console.log('  ⏸ notifications paused — skip digest');
     return;
   }
 

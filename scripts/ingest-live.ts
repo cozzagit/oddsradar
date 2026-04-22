@@ -18,6 +18,7 @@ import { fetchLiveFixtures, fetchLiveOdds, mapAfMarket } from '../src/lib/source
 import { persistSignalIfNew, expireOldSignals } from '../src/lib/signals/persist';
 import { selectionLabel } from '../src/lib/signals/actionable';
 import { formatBetMessage, sendTelegram, telegramEnabled } from '../src/lib/notify/telegram';
+import { isNotificationsEnabled } from '../src/lib/settings';
 
 const SITE_URL = process.env.NEXTAUTH_URL ?? 'http://localhost:3041';
 const LIVE_STEAM_PCT = Number(process.env.LIVE_STEAM_PCT ?? '0.06'); // 6%
@@ -37,6 +38,10 @@ function suggestLiveStake(bankroll: number, dropPct: number): number {
 async function main() {
   const t0 = Date.now();
   console.log(`[${new Date().toISOString()}] === LIVE ingest (API-Football) ===`);
+  if (!(await isNotificationsEnabled())) {
+    console.log('  ⏸ notifications paused — skip (no fetch, no scan)');
+    return;
+  }
   await expireOldSignals();
 
   const fixtures = await fetchLiveFixtures();

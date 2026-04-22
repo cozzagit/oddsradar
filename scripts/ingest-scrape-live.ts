@@ -17,6 +17,7 @@ import {
   getMatchStateWindow,
   matchStateChanged,
 } from '../src/lib/signals/live-context';
+import { isNotificationsEnabled } from '../src/lib/settings';
 
 const SITE_URL = process.env.NEXTAUTH_URL ?? 'http://localhost:3041';
 const MAX_TG = Number(process.env.MAX_TELEGRAM_PER_RUN ?? '6');
@@ -28,6 +29,10 @@ const HISTORY_LOOKBACK_MIN = BASELINE_MIN + 10;
 async function main() {
   const t0 = Date.now();
   console.log(`[${new Date().toISOString()}] === PRICE-CHANGE scan ===`);
+  if (!(await isNotificationsEnabled())) {
+    console.log('  ⏸ notifications paused — skip');
+    return;
+  }
   await expireOldSignals();
 
   const since = new Date(Date.now() - HISTORY_LOOKBACK_MIN * 60_000);

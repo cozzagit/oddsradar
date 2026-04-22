@@ -20,6 +20,7 @@ import { persistSignalIfNew, expireOldSignals } from '../src/lib/signals/persist
 import { bookLabel, selectionLabel } from '../src/lib/signals/actionable';
 import { formatBetMessage, sendTelegram, telegramEnabled } from '../src/lib/notify/telegram';
 import { fetchSportOdds, poolStatus } from '../src/lib/sources/the-odds-api';
+import { isNotificationsEnabled } from '../src/lib/settings';
 
 const SITE_URL = process.env.NEXTAUTH_URL ?? 'http://localhost:3041';
 
@@ -83,6 +84,10 @@ const MAX_TELEGRAM_PER_RUN = Number(process.env.MAX_TELEGRAM_PER_RUN ?? '8');
 async function main() {
   const t0 = Date.now();
   console.log(`[${new Date().toISOString()}] === ingest+bestbet ===`);
+  if (!(await isNotificationsEnabled())) {
+    console.log('  ⏸ notifications paused — skip (no API calls, no scan)');
+    return;
+  }
   console.log('  TheOddsAPI pool:', poolStatus().map((s) => s.key + (s.exhausted ? '(OUT)' : '')).join(', '));
 
   const expired = await expireOldSignals();
