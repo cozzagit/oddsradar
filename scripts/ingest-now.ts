@@ -1,12 +1,17 @@
 /**
- * One-shot ingestion + detection pipeline.
- * Fetches The Odds API for soccer leagues, normalizes, writes odds_snapshots,
- * runs arbitrage + value detectors, writes signals.
+ * One-shot ingestion + detection + notify pipeline.
+ * - Fetch TheOddsAPI per campionati soccer
+ * - Normalize team/event/market
+ * - Persist odds_snapshots
+ * - Run detector arbitrage + value (sharp consensus)
+ * - Deduplica signals (finestra 15 min per stesso evento+mercato+tipo)
+ * - Expire segnali scaduti
+ * - Invia notifica Telegram per OGNI nuovo signal sopra soglia
  *
- * Usage: npm run ingest:now
+ * Usage: npm run ingest:now  (oppure scheduler vedi scripts/scheduler.ts)
  */
 import 'dotenv/config';
-import { eq, and, desc, gte, inArray, sql } from 'drizzle-orm';
+import { eq, desc } from 'drizzle-orm';
 import { db, schema } from '../src/lib/db';
 import {
   findOrCreateCompetition,
@@ -16,6 +21,21 @@ import {
 } from '../src/lib/normalize/entities';
 import { detectArbitrage, type LatestOdd } from '../src/lib/detectors/arbitrage';
 import { detectValueBets } from '../src/lib/detectors/value-bet';
+import {
+  persistArbSignalIfNew,
+  persistValueSignalIfNew,
+  expireOldSignals,
+} from '../src/lib/signals/persist';
+import {
+  buildActionableArb,
+  buildActionableValue,
+} from '../src/lib/signals/actionable';
+import {
+  formatArbMessage,
+  formatValueMessage,
+  sendTelegram,
+  telegramEnabled,
+} from '../src/lib/notify/telegram';
 
 const TOA_KEY = process.env.THE_ODDS_API_KEY;
 if (!TOA_KEY) {
@@ -24,8 +44,8 @@ if (!TOA_KEY) {
 }
 
 const BASE = 'https://api.the-odds-api.com/v4';
+const SITE_URL = process.env.NEXTAUTH_URL ?? 'http://localhost:3040';
 
-// Map TOA sport keys → our canonical (sport_slug, competition_name)
 const TOA_SPORTS: Array<{ key: string; sportSlug: string; competition: string }> = [
   { key: 'soccer_italy_serie_a', sportSlug: 'soccer', competition: 'Serie A' },
   { key: 'soccer_italy_serie_b', sportSlug: 'soccer', competition: 'Serie B' },
@@ -37,7 +57,6 @@ const TOA_SPORTS: Array<{ key: string; sportSlug: string; competition: string }>
   { key: 'soccer_uefa_europa_league', sportSlug: 'soccer', competition: 'UEFA Europa League' },
 ];
 
-// TOA bookmaker key → our book slug (subset — rest are ignored)
 const TOA_BOOK: Record<string, string> = {
   pinnacle: 'pinnacle',
   betfair_ex_eu: 'betfair_ex',
@@ -48,7 +67,6 @@ const TOA_BOOK: Record<string, string> = {
   matchbook: 'matchbook',
   unibet_eu: 'bet365',
   betclic: 'bet365',
-  // ADM italian-facing books
   snai: 'snai',
   goldbet: 'goldbet',
   sisal: 'sisal',
@@ -65,10 +83,7 @@ type ToaEvent = {
   away_team: string;
   bookmakers: Array<{
     key: string;
-    markets: Array<{
-      key: string;
-      outcomes: Array<{ name: string; price: number; point?: number }>;
-    }>;
+    markets: Array<{ key: string; outcomes: Array<{ name: string; price: number; point?: number }> }>;
   }>;
 };
 
@@ -84,8 +99,23 @@ async function fetchSport(sportKey: string): Promise<ToaEvent[]> {
   return (await r.json()) as ToaEvent[];
 }
 
+function fmtKickoffIT(d: Date): string {
+  return d.toLocaleString('it-IT', {
+    weekday: 'short',
+    day: '2-digit',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZone: 'Europe/Rome',
+  });
+}
+
 async function main() {
-  console.log('=== OddsRadar one-shot ingest ===');
+  const t0 = Date.now();
+  console.log(`[${new Date().toISOString()}] === OddsRadar ingest ===`);
+
+  const expired = await expireOldSignals();
+  if (expired > 0) console.log(`  expired ${expired} old signals`);
 
   const sportsAll = await db.select().from(schema.sports);
   const booksAll = await db.select().from(schema.books);
@@ -95,14 +125,12 @@ async function main() {
   const bookBySlug = new Map(booksAll.map((b) => [b.slug, b]));
 
   let totalSnapshots = 0;
-  const touchedEventIds = new Set<number>();
+  const touchedEvents = new Map<number, { home: string; away: string; competition: string; kickoff: Date }>();
   const takenAt = new Date();
 
   for (const s of TOA_SPORTS) {
     const sport = sportsAll.find((x) => x.slug === s.sportSlug);
     if (!sport) continue;
-    console.log(`\n> ${s.competition}`);
-
     const events = await fetchSport(s.key);
     if (events.length === 0) continue;
 
@@ -113,9 +141,14 @@ async function main() {
       const { id: awayId } = await findOrCreateTeam(sport.id, ev.away_team);
       const kickoff = new Date(ev.commence_time);
       const eventId = await findOrCreateEvent(competitionId, homeId, awayId, kickoff);
-      touchedEventIds.add(eventId);
+      touchedEvents.set(eventId, {
+        home: ev.home_team,
+        away: ev.away_team,
+        competition: s.competition,
+        kickoff,
+      });
 
-      const snapshotsToInsert: Array<{
+      const toInsert: Array<{
         takenAt: Date;
         eventId: number;
         marketId: number;
@@ -142,7 +175,7 @@ async function main() {
               ev.away_team,
             );
             if (!mapped) continue;
-            snapshotsToInsert.push({
+            toInsert.push({
               takenAt,
               eventId,
               marketId: mapped.marketId,
@@ -155,28 +188,31 @@ async function main() {
         }
       }
 
-      if (snapshotsToInsert.length > 0) {
-        await db.insert(schema.oddsSnapshots).values(snapshotsToInsert);
-        totalSnapshots += snapshotsToInsert.length;
+      if (toInsert.length > 0) {
+        await db.insert(schema.oddsSnapshots).values(toInsert);
+        totalSnapshots += toInsert.length;
       }
     }
   }
 
-  console.log(`\n✓ Ingestion done: ${totalSnapshots} odds_snapshots, ${touchedEventIds.size} events`);
+  console.log(`  ingested: ${totalSnapshots} snapshots / ${touchedEvents.size} events`);
 
-  // === DETECTION PHASE ===
-  console.log('\n=== Detection ===');
-
+  // === DETECTION + NOTIFY ===
   let arbCount = 0;
   let valueCount = 0;
+  let notified = 0;
   const sharpSet = new Set(SHARP_SLUGS);
+  const ARB_MIN = Number(process.env.ARB_EDGE_MIN ?? '0.005');
+  const VALUE_MIN = Number(process.env.VALUE_EDGE_MIN ?? '0.03');
 
-  for (const eventId of touchedEventIds) {
+  for (const [eventId, meta] of touchedEvents) {
     const latest = await db
       .select({
         bookId: schema.oddsSnapshots.bookId,
         bookSlug: schema.books.slug,
         marketId: schema.oddsSnapshots.marketId,
+        marketSlug: schema.markets.slug,
+        marketName: schema.markets.name,
         selectionId: schema.oddsSnapshots.selectionId,
         selectionSlug: schema.selections.slug,
         odd: schema.oddsSnapshots.odd,
@@ -184,18 +220,20 @@ async function main() {
       })
       .from(schema.oddsSnapshots)
       .innerJoin(schema.books, eq(schema.books.id, schema.oddsSnapshots.bookId))
+      .innerJoin(schema.markets, eq(schema.markets.id, schema.oddsSnapshots.marketId))
       .innerJoin(schema.selections, eq(schema.selections.id, schema.oddsSnapshots.selectionId))
       .where(eq(schema.oddsSnapshots.eventId, eventId))
       .orderBy(desc(schema.oddsSnapshots.takenAt));
 
-    // Group by marketId then dedupe to latest snapshot per (book, selection)
-    const byMarket = new Map<number, LatestOdd[]>();
+    const byMarket = new Map<number, { marketName: string; marketSlug: string; odds: LatestOdd[] }>();
     for (const row of latest) {
       const key = `${row.bookId}:${row.selectionId}`;
-      if (!byMarket.has(row.marketId)) byMarket.set(row.marketId, []);
+      if (!byMarket.has(row.marketId)) {
+        byMarket.set(row.marketId, { marketName: row.marketName, marketSlug: row.marketSlug, odds: [] });
+      }
       const arr = byMarket.get(row.marketId)!;
-      if (!arr.some((a) => `${a.bookId}:${a.selectionId}` === key)) {
-        arr.push({
+      if (!arr.odds.some((a) => `${a.bookId}:${a.selectionId}` === key)) {
+        arr.odds.push({
           bookId: row.bookId,
           bookSlug: row.bookSlug,
           selectionId: row.selectionId,
@@ -206,69 +244,116 @@ async function main() {
       }
     }
 
-    for (const [marketId, odds] of byMarket) {
-      // ARBITRAGE
+    for (const [marketId, { marketName, odds }] of byMarket) {
+      const expiresAt = new Date(Date.now() + 30 * 60_000);
+
+      // ARB
       const arb = detectArbitrage(odds);
-      const arbMin = Number(process.env.ARB_EDGE_MIN ?? '0.005');
-      if (arb && arb.edge >= arbMin) {
-        await db.insert(schema.signals).values({
-          type: 'arb',
+      if (arb && arb.edge >= ARB_MIN) {
+        const newId = await persistArbSignalIfNew({
           eventId,
           marketId,
           edge: arb.edge,
           payload: arb as unknown as Record<string, unknown>,
-          expiresAt: new Date(Date.now() + 30 * 60_000),
+          expiresAt,
         });
-        arbCount++;
+        if (newId) {
+          arbCount++;
+          if (telegramEnabled()) {
+            const act = buildActionableArb(arb.legs, arb.edge, meta.home, meta.away, 100);
+            const ok = await sendTelegram(
+              formatArbMessage({
+                home: meta.home,
+                away: meta.away,
+                competition: meta.competition,
+                kickoffLocal: fmtKickoffIT(meta.kickoff),
+                edgePct: act.guaranteedProfitPct,
+                guaranteedProfit: act.guaranteedProfit,
+                totalStake: 100,
+                legs: act.legs,
+                feasibility: act.feasibility,
+                url: `${SITE_URL}/signals`,
+              }),
+            );
+            if (ok) notified++;
+          }
+        }
       }
 
-      // VALUE (require sharp presence)
+      // VALUE
       const sharpOdds = odds.filter((o) => sharpSet.has(o.bookSlug));
-      if (sharpOdds.length === 0) continue;
-      const edgeMin = Number(process.env.VALUE_EDGE_MIN ?? '0.03');
-      const values = detectValueBets(odds, sharpOdds, edgeMin);
-      for (const v of values) {
-        // skip if the "offering" book is itself a sharp (cross-sharp false signal)
-        if (sharpSet.has(v.bookSlug)) continue;
-        await db.insert(schema.signals).values({
-          type: 'value',
-          eventId,
-          marketId,
-          selectionId: v.selectionId,
-          edge: v.edge,
-          payload: v as unknown as Record<string, unknown>,
-          expiresAt: new Date(Date.now() + 30 * 60_000),
-        });
-        valueCount++;
+      if (sharpOdds.length > 0) {
+        const values = detectValueBets(odds, sharpOdds, VALUE_MIN);
+        for (const v of values) {
+          if (sharpSet.has(v.bookSlug)) continue;
+          const newId = await persistValueSignalIfNew({
+            eventId,
+            marketId,
+            selectionId: v.selectionId,
+            bookId: v.bookId,
+            edge: v.edge,
+            payload: v as unknown as Record<string, unknown>,
+            expiresAt,
+          });
+          if (newId) {
+            valueCount++;
+            if (telegramEnabled()) {
+              const act = buildActionableValue(
+                v.bookSlug,
+                v.selectionSlug,
+                v.offeredOdd,
+                v.fairOdd,
+                v.fairProb,
+                v.edge,
+                meta.home,
+                meta.away,
+              );
+              const ok = await sendTelegram(
+                formatValueMessage({
+                  home: meta.home,
+                  away: meta.away,
+                  competition: `${meta.competition} · ${marketName}`,
+                  kickoffLocal: fmtKickoffIT(meta.kickoff),
+                  label: act.label,
+                  bookName: act.bookName,
+                  offeredOdd: act.offeredOdd,
+                  fairOdd: act.fairOdd,
+                  edgePct: act.edgePct,
+                  fairProbPct: act.fairProb * 100,
+                  suggestedStakePctBankroll: act.suggestedStakePctBankroll,
+                  url: `${SITE_URL}/signals`,
+                }),
+              );
+              if (ok) notified++;
+            }
+          }
+        }
       }
     }
   }
 
-  console.log(`✓ Detection done: ${arbCount} ARB signals, ${valueCount} VALUE signals`);
-
-  // Log ingestion run
-  for (const [slug] of bookBySlug) {
-    if (['pinnacle', 'betfair_ex', 'smarkets'].includes(slug)) {
-      const book = bookBySlug.get(slug);
-      if (book) {
-        await db.insert(schema.ingestionRuns).values({
-          bookId: book.id,
-          startedAt: takenAt,
-          finishedAt: new Date(),
-          itemsFetched: totalSnapshots,
-          itemsInserted: totalSnapshots,
-          errorsCount: 0,
-          status: 'success',
-          note: 'the_odds_api one-shot',
-        });
-      }
-    }
+  // Log run
+  const book = bookBySlug.get('pinnacle');
+  if (book) {
+    await db.insert(schema.ingestionRuns).values({
+      bookId: book.id,
+      startedAt: takenAt,
+      finishedAt: new Date(),
+      itemsFetched: totalSnapshots,
+      itemsInserted: totalSnapshots,
+      errorsCount: 0,
+      status: 'success',
+      note: `the_odds_api · +${arbCount} arb / +${valueCount} value / ${notified} notify`,
+    });
   }
 
-  process.exit(0);
+  const took = ((Date.now() - t0) / 1000).toFixed(1);
+  console.log(`  ✓ arb=+${arbCount} value=+${valueCount} notified=${notified} in ${took}s`);
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+main()
+  .then(() => process.exit(0))
+  .catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });

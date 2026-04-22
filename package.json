@@ -13,7 +13,9 @@
     "db:ext": "psql $DATABASE_URL -f drizzle/migrations/0001_extensions.sql",
     "db:timescale": "psql $DATABASE_URL -f drizzle/migrations/0002_timescale.sql",
     "hash:password": "tsx scripts/hash-password.ts",
-    "ingest:now": "tsx scripts/ingest-now.ts"
+    "ingest:now": "tsx scripts/ingest-now.ts",
+    "scheduler": "tsx scripts/scheduler.ts",
+    "drain:scrape": "tsx scripts/drain-scrape-queue.ts"
   },
   "dependencies": {
     "@auth/drizzle-adapter": "^1.11.2",

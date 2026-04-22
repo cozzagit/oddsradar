@@ -1,3 +1,4 @@
+"""Redis queue publisher — push RawEventSnapshot per il consumer Node."""
 import json
 from datetime import datetime
 
@@ -7,6 +8,9 @@ from .config import settings
 from .models import RawEventSnapshot
 
 _client: redis.Redis | None = None
+
+QUEUE_KEY = "oddsradar:scrape_queue"
+RUN_LOG_KEY = "oddsradar:ingestion_runs"
 
 
 def get_client() -> redis.Redis:
@@ -24,19 +28,14 @@ def _default(o):
 
 def push_snapshot(snapshot: RawEventSnapshot) -> None:
     client = get_client()
-    # BullMQ compat: add to list "bull:ingest:wait" with expected JSON shape.
-    payload = {
-        "name": "snapshot",
-        "data": json.loads(snapshot.model_dump_json()),
-        "opts": {"attempts": 3},
-    }
-    client.lpush("bull:ingest:wait", json.dumps(payload, default=_default))
+    payload = json.loads(snapshot.model_dump_json())
+    client.lpush(QUEUE_KEY, json.dumps(payload, default=_default))
 
 
 def push_run_log(book_slug: str, items_fetched: int, errors: int, status: str) -> None:
     client = get_client()
     client.lpush(
-        "oddsradar:ingestion_runs",
+        RUN_LOG_KEY,
         json.dumps(
             {
                 "book_slug": book_slug,
