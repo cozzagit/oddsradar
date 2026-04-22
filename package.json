@@ -15,7 +15,9 @@
     "hash:password": "tsx scripts/hash-password.ts",
     "ingest:now": "tsx scripts/ingest-now.ts",
     "scheduler": "tsx scripts/scheduler.ts",
-    "drain:scrape": "tsx scripts/drain-scrape-queue.ts"
+    "drain:scrape": "tsx scripts/drain-scrape-queue.ts",
+    "ingest:live": "tsx scripts/ingest-live.ts",
+    "scheduler:live": "tsx scripts/scheduler-live.ts"
   },
   "dependencies": {
     "@auth/drizzle-adapter": "^1.11.2",

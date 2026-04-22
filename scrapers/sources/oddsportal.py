@@ -50,36 +50,61 @@ BOOK_MAP = {
 
 
 def _parse_event_list(html: str) -> list[dict]:
-    """Estrae lista eventi (home, away, kickoff, match_url) dalla pagina lega."""
+    """Estrae lista eventi (home, away, kickoff, match_url) dalla pagina lega.
+
+    Markup OddsPortal 2026 (confermato da snapshot reale):
+    - <a href="/football/h2h/<home>-<id>/<away>-<id>/...">
+        <div data-testid="date-time-item"><p>Oggi</p><p>21:30</p></div>
+        <a data-testid="event-participants">
+          <img alt="Barcellona" />
+          <img alt="Celta Vigo" />
+    """
     soup = BeautifulSoup(html, "lxml")
     events: list[dict] = []
+    seen_urls: set[str] = set()
 
-    # OddsPortal moderno: rows <div class="eventRow"> con data-event-row e child link
-    for row in soup.select("[data-testid='event-row'], .eventRow, div.match-row"):
-        link_el = row.select_one("a[href*='/football/']")
-        if not link_el:
+    for link in soup.select("a[href*='/football/h2h/']"):
+        href = link.get("href", "")
+        if not href or not href.startswith("/football/h2h/"):
             continue
-        href = link_el.get("href", "")
-        if not href.startswith("/"):
+        if href in seen_urls:
             continue
-        title = link_el.get_text(" ", strip=True)
-        m = re.match(r"^(.*?)\s+[-–]\s+(.+)$", title)
-        if not m:
+        seen_urls.add(href)
+
+        # Find event-participants container (può essere child o self)
+        participants = link.select_one("[data-testid='event-participants']")
+        if not participants:
+            participants = link
+        imgs = participants.select("img[alt]")
+        if len(imgs) < 2:
             continue
-        home, away = m.group(1).strip(), m.group(2).strip()
-        # kickoff data- attr (best-effort)
-        ts_el = row.select_one("[data-start-time], time")
+        home = (imgs[0].get("alt") or "").strip()
+        away = (imgs[1].get("alt") or "").strip()
+        if not home or not away:
+            continue
+
+        # Date/time — best effort
         kickoff = None
-        if ts_el:
-            ts_raw = ts_el.get("data-start-time") or ts_el.get("datetime")
-            if ts_raw and ts_raw.isdigit():
-                kickoff = datetime.fromtimestamp(int(ts_raw), tz=timezone.utc)
-            elif ts_raw:
-                try:
-                    kickoff = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
-                except Exception:  # noqa: BLE001
-                    kickoff = None
-        events.append({"home": home, "away": away, "kickoff": kickoff, "url": BASE + href})
+        dt_el = link.select_one("[data-testid='date-time-item']")
+        if dt_el:
+            ps = dt_el.find_all("p")
+            if len(ps) >= 2:
+                # "Oggi" / "26/04" e "21:30" — basic parse
+                time_str = ps[-1].get_text(strip=True)
+                m = re.match(r"^(\d{1,2}):(\d{2})$", time_str)
+                if m:
+                    h, mi = int(m.group(1)), int(m.group(2))
+                    now = datetime.now(timezone.utc)
+                    kickoff = now.replace(hour=h, minute=mi, second=0, microsecond=0)
+
+        events.append(
+            {
+                "home": home,
+                "away": away,
+                "kickoff": kickoff,
+                "url": BASE + href if not href.startswith("http") else href,
+            }
+        )
     return events
 
 

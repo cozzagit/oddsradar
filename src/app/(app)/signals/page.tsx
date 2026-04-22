@@ -88,7 +88,10 @@ export default async function SignalsPage() {
               soft: { bookCount: number; meanOdd: number };
               minors: { bookCount: number; meanOdd: number };
               fairProb: number;
+              isLive?: boolean;
+              liveElapsed?: number;
             };
+            const isLive = Boolean(p.isLive);
             const confidence = Math.round(Number(p.confidence ?? 0));
             const confColor =
               confidence >= 80 ? 'text-emerald-400' : confidence >= 65 ? 'text-cyan-400' : 'text-amber-400';
@@ -97,12 +100,23 @@ export default async function SignalsPage() {
             return (
               <li
                 key={r.id}
-                className="overflow-hidden rounded-xl border-2 border-zinc-800 bg-zinc-900/60 transition hover:border-zinc-700"
+                className={
+                  'overflow-hidden rounded-xl border-2 bg-zinc-900/60 transition hover:border-zinc-700 ' +
+                  (isLive ? 'border-red-700/60 ring-1 ring-red-700/40' : 'border-zinc-800')
+                }
               >
                 <div className="border-b border-zinc-800 bg-zinc-950/60 px-4 py-3">
                   <div className="mb-1 flex items-center justify-between text-xs text-zinc-500">
-                    <span>{r.competition} · {r.marketName}</span>
-                    <span>{fmtKickoff(r.kickoff)} · {relKickoff(r.kickoff)}</span>
+                    <span className="flex items-center gap-2">
+                      {isLive && (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-red-600 px-2 py-0.5 text-[10px] font-bold uppercase text-white">
+                          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-white"></span>
+                          LIVE {p.liveElapsed ? `${p.liveElapsed}'` : ''}
+                        </span>
+                      )}
+                      {r.competition} · {r.marketName}
+                    </span>
+                    <span>{fmtKickoff(r.kickoff)} · {isLive ? 'in corso' : relKickoff(r.kickoff)}</span>
                   </div>
                   <Link href={`/events/${r.eventId}`} className="text-lg font-semibold hover:underline">
                     {r.home} <span className="text-zinc-500">vs</span> {r.away}

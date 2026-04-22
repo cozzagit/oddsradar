@@ -9,7 +9,7 @@ import structlog
 
 log = structlog.get_logger()
 
-_IMPERSONATES = ["chrome120", "chrome119", "chrome116", "firefox133"]
+_IMPERSONATES = ["chrome120", "chrome119", "chrome116"]
 
 
 def fetch(url: str, *, headers: dict | None = None, timeout: int = 20, referer: str | None = None) -> str:
