@@ -1,7 +1,7 @@
 import { and, eq, gte, isNotNull, lte } from 'drizzle-orm';
 import { db, schema } from '@/lib/db';
 
-const DEDUP_WINDOW_MS = 15 * 60_000;
+const DEFAULT_DEDUP_MS = 60 * 60_000; // 60 min
 
 interface PersistInput {
   type: 'arb' | 'value' | 'steam' | 'bet';
@@ -11,16 +11,19 @@ interface PersistInput {
   edge: number;
   payload: Record<string, unknown>;
   expiresAt: Date;
+  dedupWindowMs?: number; // override (es. live price-change 10 min)
 }
 
 /** Returns id of new signal or null if a recent duplicate already exists. */
 export async function persistSignalIfNew(input: PersistInput): Promise<number | null> {
-  const sinceTs = new Date(Date.now() - DEDUP_WINDOW_MS);
+  const windowMs = input.dedupWindowMs ?? DEFAULT_DEDUP_MS;
+  const sinceTs = new Date(Date.now() - windowMs);
+  // Dedup guarda TUTTI i signal (active o expired) recenti per evitare
+  // che un signal expired dopo pochi minuti venga ri-generato.
   const conditions = [
     eq(schema.signals.eventId, input.eventId),
     eq(schema.signals.marketId, input.marketId),
     eq(schema.signals.type, input.type),
-    eq(schema.signals.status, 'active'),
     gte(schema.signals.createdAt, sinceTs),
   ];
   if (input.selectionId != null) {

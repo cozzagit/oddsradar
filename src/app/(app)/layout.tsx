@@ -1,13 +1,25 @@
 import Link from 'next/link';
 import { auth, signOut } from '@/lib/auth/auth';
 import { redirect } from 'next/navigation';
+import { isNotificationsEnabled } from '@/lib/settings';
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const session = await auth();
   if (!session?.user) redirect('/login');
 
+  const notifOn = await isNotificationsEnabled();
+
   return (
     <div className="flex min-h-screen flex-col">
+      {!notifOn && (
+        <Link
+          href="/settings"
+          className="sticky top-0 z-30 flex items-center justify-center gap-2 border-b border-red-800 bg-red-900/80 px-4 py-2 text-xs font-semibold text-red-100 backdrop-blur hover:bg-red-900"
+        >
+          <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-red-300" />
+          NOTIFICHE IN PAUSA — clicca per gestire
+        </Link>
+      )}
       <header className="sticky top-0 z-20 flex h-14 items-center justify-between border-b border-zinc-800 bg-zinc-950/80 px-4 backdrop-blur">
         <Link href="/signals" className="flex items-center gap-2">
           <div className="h-6 w-6 rounded bg-gradient-to-br from-cyan-400 to-teal-600" />

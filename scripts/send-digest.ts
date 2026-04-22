@@ -192,12 +192,35 @@ async function main() {
     timeZone: 'Europe/Rome',
   });
 
-  const MAX_PER_SECTION = 12;
+  const MAX_PER_LEAGUE = 4;
+  const MAX_LEAGUES_PER_SECTION = 6;
+
+  /** Raggruppa per competizione, mostra top N per lega. */
   const sectionBlock = (title: string, items: Row[]): string => {
     if (items.length === 0) return '';
-    const lines = items.slice(0, MAX_PER_SECTION).map((r) => `• ${r.text}`);
-    const more = items.length > MAX_PER_SECTION ? `\n<i>+${items.length - MAX_PER_SECTION} altri…</i>` : '';
-    return `\n<b>${title}</b>\n${lines.join('\n')}${more}`;
+    const byLeague = new Map<string, Row[]>();
+    for (const r of items) {
+      if (!byLeague.has(r.competition)) byLeague.set(r.competition, []);
+      byLeague.get(r.competition)!.push(r);
+    }
+    // Ordina leghe per numero signal desc
+    const leagues = [...byLeague.entries()].sort((a, b) => b[1].length - a[1].length);
+
+    const blocks: string[] = [];
+    let shown = 0;
+    let leaguesShown = 0;
+    for (const [league, rows] of leagues) {
+      if (leaguesShown >= MAX_LEAGUES_PER_SECTION) break;
+      const top = rows.slice(0, MAX_PER_LEAGUE);
+      const lines = top.map((r) => `  • ${r.text}`);
+      blocks.push(`<u>${league}</u>\n${lines.join('\n')}`);
+      shown += top.length;
+      leaguesShown++;
+    }
+    const hiddenLeagues = leagues.length - leaguesShown;
+    const hiddenRows = items.length - shown;
+    const more = hiddenRows > 0 ? `\n<i>+${hiddenRows} in altre ${hiddenLeagues > 0 ? hiddenLeagues + ' leghe' : 'partite'}…</i>` : '';
+    return `\n<b>${title}</b>\n${blocks.join('\n')}${more}`;
   };
 
   let body = `📋 <b>PROMEMORIA ${windowFrom}–${nowStr}</b>\n`;

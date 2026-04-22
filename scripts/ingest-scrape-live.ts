@@ -224,6 +224,7 @@ async function main() {
       edge: Math.abs(c.sig.changePct),
       payload: payload as unknown as Record<string, unknown>,
       expiresAt: new Date(Date.now() + 10 * 60_000),
+      dedupWindowMs: 30 * 60_000, // live: 30 min
     });
     if (!newId) continue;
     persisted++;

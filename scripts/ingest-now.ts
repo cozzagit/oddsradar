@@ -292,6 +292,7 @@ async function main() {
       edge: c.top.edge,
       payload: payload as unknown as Record<string, unknown>,
       expiresAt: new Date(Date.now() + 45 * 60_000),
+      dedupWindowMs: 90 * 60_000, // prematch: 90 min (copertura del digest 30min × 3)
     });
     if (!newId) continue;
     betCount++;
