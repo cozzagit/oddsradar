@@ -18,7 +18,7 @@ import {
 import type { LatestOdd } from '../src/lib/detectors/arbitrage';
 import { persistSignalIfNew, expireOldSignals } from '../src/lib/signals/persist';
 import { bookLabel, selectionLabel } from '../src/lib/signals/actionable';
-import { formatBestBetMessage, sendTelegram, telegramEnabled } from '../src/lib/notify/telegram';
+import { formatBetMessage, sendTelegram, telegramEnabled } from '../src/lib/notify/telegram';
 import { fetchSportOdds, poolStatus } from '../src/lib/sources/the-odds-api';
 
 const SITE_URL = process.env.NEXTAUTH_URL ?? 'http://localhost:3041';
@@ -72,17 +72,6 @@ async function fetchSport(sportKey: string): Promise<ToaEvent[]> {
     return [];
   }
   return res.data as ToaEvent[];
-}
-
-function fmtIT(d: Date): string {
-  return d.toLocaleString('it-IT', {
-    weekday: 'short',
-    day: '2-digit',
-    month: 'short',
-    hour: '2-digit',
-    minute: '2-digit',
-    timeZone: 'Europe/Rome',
-  });
 }
 
 const MIN_CONFIDENCE = Number(process.env.BET_MIN_CONFIDENCE ?? '60');
@@ -267,7 +256,9 @@ async function main() {
       if (recs.length === 0) continue;
       const top = recs[0];
       if (top.confidence < MIN_CONFIDENCE) continue;
-      if (top.edge < MIN_EDGE && top.scores.steamScore < 0.4) continue;
+      // Filter: serve edge o steam o confidence molto alta (consensus pick).
+      const confOverride = top.confidence >= 70;
+      if (!confOverride && top.edge < MIN_EDGE && top.scores.steamScore < 0.4) continue;
 
       const stakeEur = suggestStakeEur(bankroll, top.fairProb, top.marketMedianOdd);
       if (stakeEur <= 0) continue;
@@ -301,12 +292,12 @@ async function main() {
     betCount++;
     if (telegramEnabled() && notified < MAX_TELEGRAM_PER_RUN) {
       const ok = await sendTelegram(
-        formatBestBetMessage({
+        formatBetMessage({
           home: c.meta.home,
           away: c.meta.away,
           competition: c.meta.competition,
           marketName: c.marketName,
-          kickoffLocal: fmtIT(c.meta.kickoff),
+          kickoff: c.meta.kickoff,
           selectionLabel: selectionLabel(c.top.selectionSlug, c.meta.home, c.meta.away),
           fairOdd: c.top.fairOdd,
           marketMedianOdd: c.top.marketMedianOdd,

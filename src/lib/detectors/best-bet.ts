@@ -150,22 +150,31 @@ export function detectBestBets(
 
   const fairAll = stripVig(allOdds, expectedSelections);
   const sharpOdds = allOdds.filter((o) => SHARP.has(o.bookSlug));
-  // Serve almeno 1 book sharp COMPLETO per fair affidabile.
   const sharpBookCount = new Set(sharpOdds.map((o) => o.bookSlug)).size;
-  if (sharpBookCount < 1) return [];
-  const fairSharp = stripVig(sharpOdds, expectedSelections);
-  if (fairSharp.size === 0) return []; // nessun book sharp completo
+  // Serve almeno 1 sharp completo. Se 2+ usiamo media sharp, se 1 solo pooliamo
+  // sharp+soft mainstream per ridurre rischio outlier del singolo book.
+  const fairSharp = sharpBookCount >= 1 ? stripVig(sharpOdds, expectedSelections) : new Map<number, number>();
+  const fairUsed = fairSharp.size > 0 ? fairSharp : fairAll;
+  if (fairUsed.size === 0) return [];
+
+  // SANITY: fair_prob vs implied del market median, max delta 10 punti.
+  // Evita soliti bug di devigging che facevano fair=0.53 con quota mercato=2.34.
+  const sanityMaxDelta = 0.1;
 
   const steam = steamScoresFor(history);
   const results: BestBetRecommendation[] = [];
 
   for (const [selId, sel] of sels) {
-    const fair = fairSharp.get(selId) ?? fairAll.get(selId);
+    const fair = fairUsed.get(selId);
     if (!fair || fair <= 0 || fair >= 1) continue;
     const fairOdd = 1 / fair;
 
     const bookOdds = [...sel.byBook.values()];
     const marketMedian = median(bookOdds.map((o) => o.odd));
+    const marketImplied = 1 / marketMedian;
+
+    // Sanity cross-validation: fair deve essere "vicino" alla probabilità di mercato.
+    if (Math.abs(fair - marketImplied) > sanityMaxDelta) continue;
 
     let bestBookSlug = '';
     let bestBookOdd = 0;
@@ -184,11 +193,12 @@ export function detectBestBets(
     const minorMean = minorOdds.length > 0 ? minorOdds.reduce((a, b) => a + b.odd, 0) / minorOdds.length : 0;
 
     // Sharp edge vs soft: almeno 2 soft per ridurre varianza.
-    // Cap edge a 20% per tagliare outlier/bug.
+    // Cap edge a 10% per O/U, 8% per mercati con 3 selezioni (1X2) — più stringente.
     let sharpEdgeVsSoft = 0;
+    const edgeCap = expectedSelections === 2 ? 0.1 : 0.08;
     if (softOdds.length >= 2 && softMean > 0) {
       const raw = softMean * fair - 1;
-      sharpEdgeVsSoft = Math.max(-0.2, Math.min(0.2, raw));
+      sharpEdgeVsSoft = Math.max(-edgeCap, Math.min(edgeCap, raw));
     }
 
     // Minors edge vs sharp: minori pagano molto di più dello sharp → anomalia sospetta
@@ -199,44 +209,54 @@ export function detectBestBets(
     let minorsEdgeVsSharp = 0;
     if (minorOdds.length >= 3 && sharpMeanSel > 0 && minorMean > 0) {
       const raw = (minorMean - sharpMeanSel) / sharpMeanSel;
-      minorsEdgeVsSharp = Math.max(-0.2, Math.min(0.2, raw));
+      minorsEdgeVsSharp = Math.max(-edgeCap, Math.min(edgeCap, raw));
     }
 
     const steamScore = steam.get(selId) ?? 0;
 
-    // Confidence 0-100
-    let confidence = 0;
+    // Confidence 0-100 — ricalibrato per funzionare sia su 1X2 (fair < 50%)
+    // sia su OU (fair tipicamente 50-60%).
+    let confidence = 25; // base: copertura sufficiente (già verificata)
     const reasoning: string[] = [];
 
-    // 1) Fair prob elevata → base confidence
-    confidence += Math.min(40, fair * 80);
     reasoning.push(
-      `Probabilità reale stimata: <b>${(fair * 100).toFixed(1)}%</b> (${sharpBookCount} sharp book).`,
+      `Probabilità reale stimata: <b>${(fair * 100).toFixed(1)}%</b> · quota giusta <b>${fairOdd.toFixed(2)}</b>.`,
     );
 
-    // 2) Soft in ritardo (vantaggio)
+    // 1) Edge sharp vs soft (peso principale)
     if (sharpEdgeVsSoft > 0.015 && softOdds.length >= 2) {
-      const bonus = Math.min(25, sharpEdgeVsSoft * 200);
+      const bonus = Math.min(35, sharpEdgeVsSoft * 450); // edge 8% → 35pts
       confidence += bonus;
       reasoning.push(
-        `Soft book (Snai/Goldbet/Sisal/Bet365) pagano in media ${softMean.toFixed(2)}, più del valore reale ${fairOdd.toFixed(2)} (+${(sharpEdgeVsSoft * 100).toFixed(1)}%).`,
+        `Soft book (${softOdds.length}) pagano in media <b>${softMean.toFixed(2)}</b>: +${(sharpEdgeVsSoft * 100).toFixed(1)}% sopra il fair.`,
       );
     }
 
-    // 3) Steam
-    if (steamScore > 0.3) {
+    // 2) Steam
+    if (steamScore > 0.25) {
       confidence += Math.min(20, steamScore * 25);
       reasoning.push(
-        `Steam: ${Math.round(steamScore * 100)}% dei book hanno abbassato la quota negli ultimi 10 min (smart money in entrata).`,
+        `Steam: ${Math.round(steamScore * 100)}% dei book hanno abbassato la quota negli ultimi 10 min.`,
       );
     }
 
-    // 4) Minori convergenti verso alto (anomalia)
-    if (minorsEdgeVsSharp > 0.04 && minorOdds.length >= 3) {
-      confidence += Math.min(15, minorsEdgeVsSharp * 100);
+    // 3) Minori convergenti su quota alta
+    if (minorsEdgeVsSharp > 0.03 && minorOdds.length >= 3) {
+      confidence += Math.min(15, minorsEdgeVsSharp * 250);
       reasoning.push(
-        `${minorOdds.length} book minori (Mozzart/1xBet/SBOBet/Fonbet) convergono su quota ${minorMean.toFixed(2)}, ${(minorsEdgeVsSharp * 100).toFixed(1)}% sopra gli sharp.`,
+        `${minorOdds.length} book minori convergono su quota <b>${minorMean.toFixed(2)}</b> (+${(minorsEdgeVsSharp * 100).toFixed(1)}% sopra sharp).`,
       );
+    }
+
+    // 4) Consensus pick: fair molto alta anche senza edge specifico
+    if (fair >= 0.55) {
+      const bonus = Math.min(15, (fair - 0.5) * 75);
+      confidence += bonus;
+      if (sharpEdgeVsSoft <= 0.015) {
+        reasoning.push(
+          `Esito molto probabile secondo il consenso dei book (${sharpBookCount} sharp).`,
+        );
+      }
     }
 
     confidence = Math.max(0, Math.min(100, confidence));

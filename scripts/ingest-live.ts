@@ -17,7 +17,7 @@ import {
 import { fetchLiveFixtures, fetchLiveOdds, mapAfMarket } from '../src/lib/sources/api-football';
 import { persistSignalIfNew, expireOldSignals } from '../src/lib/signals/persist';
 import { selectionLabel } from '../src/lib/signals/actionable';
-import { formatBestBetMessage, sendTelegram, telegramEnabled } from '../src/lib/notify/telegram';
+import { formatBetMessage, sendTelegram, telegramEnabled } from '../src/lib/notify/telegram';
 
 const SITE_URL = process.env.NEXTAUTH_URL ?? 'http://localhost:3041';
 const LIVE_STEAM_PCT = Number(process.env.LIVE_STEAM_PCT ?? '0.06'); // 6%
@@ -32,17 +32,6 @@ const VIRTUAL_BOOK_SLUG = 'api_football_live';
 function suggestLiveStake(bankroll: number, dropPct: number): number {
   const frac = dropPct >= 0.1 ? 0.02 : dropPct >= 0.06 ? 0.01 : 0.005;
   return Number((bankroll * frac).toFixed(2));
-}
-
-function fmtIT(d: Date): string {
-  return d.toLocaleString('it-IT', {
-    weekday: 'short',
-    day: '2-digit',
-    month: 'short',
-    hour: '2-digit',
-    minute: '2-digit',
-    timeZone: 'Europe/Rome',
-  });
 }
 
 async function main() {
@@ -276,27 +265,30 @@ async function main() {
     persisted++;
 
     if (telegramEnabled() && notified < MAX_TG) {
-      const minute = c.meta.elapsed ? `${c.meta.elapsed}'` : 'in corso';
       const ok = await sendTelegram(
-        formatBestBetMessage({
+        formatBetMessage({
           home: c.meta.home,
           away: c.meta.away,
-          competition: `🔴 LIVE ${minute} · ${c.meta.competition}`,
+          competition: c.meta.competition,
           marketName: c.marketName,
-          kickoffLocal: fmtIT(c.meta.kickoff),
+          kickoff: c.meta.kickoff,
+          liveElapsed: c.meta.elapsed,
           selectionLabel: selectionLabel(c.selectionSlug, c.meta.home, c.meta.away),
           fairOdd: c.newOdd,
           marketMedianOdd: c.newOdd,
-          bestBookName: 'mercato live',
+          bestBookName: 'feed live',
           bestBookOdd: c.newOdd,
           confidence: Math.min(95, 50 + c.dropPct * 400),
           stakeEur: c.stakeEur,
           bankrollEur: bankroll,
           reasoning: [
-            `Quota scesa da ${c.oldOdd.toFixed(2)} → ${c.newOdd.toFixed(2)} (-${(c.dropPct * 100).toFixed(1)}%) in ~${LIVE_WINDOW_MIN}min`,
-            `Segnale: smart money o evento in campo. Gioca SUBITO prima che si allinei.`,
+            `Quota calata ${c.oldOdd.toFixed(2)} → ${c.newOdd.toFixed(2)} (-${(c.dropPct * 100).toFixed(1)}%) in ~${LIVE_WINDOW_MIN}min`,
+            `Smart money o evento in campo. Gioca subito.`,
           ],
           url: `${SITE_URL}/signals`,
+          isLiveSteam: true,
+          oldOdd: c.oldOdd,
+          newOdd: c.newOdd,
         }),
       );
       if (ok) notified++;
