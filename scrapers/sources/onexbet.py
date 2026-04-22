@@ -1,14 +1,13 @@
-"""1xBet — endpoint JSON interno per listing live.
+"""1xBet / 1xstavka — endpoint JSON interno.
 
-URL:
-  https://1xbet.com/service-api/LiveFeed/Get1x2_VZip?sports=1&count=50&antiCacheStamp=...
+1xstavka.ru è il mirror russo che risponde 200 JSON dal VPS italiano.
+Usiamo lui come primario. Fallback: 1xbet.ng, 1xbet.com.
 
-Protezione: Cloudflare lieve, ma curl_cffi con impersonate Chrome bypassa
-quasi sempre da datacenter europeo. Se un VPS viene flaggato, ruotare
-User-Agent e ritentare.
-
-Nota: gli URL di 1xBet cambiano su ogni mirror regionale
-(1xbet.com, 1xbet.kz, etc). Iniziamo con .com + fallback.
+Note implementative:
+  - Endpoint LiveFeed/Get1x2_VZip: 1X2 main markets
+  - Endpoint LiveFeed/GetGamesZip: molte partite live complete
+  - sports=1 = calcio
+  - Restituisce Value[] anche vuoto quando non ci sono match live
 """
 from __future__ import annotations
 
@@ -18,34 +17,35 @@ from datetime import datetime, timezone
 
 import structlog
 
-from ..common.http import fetch, polite_sleep
+from ..common.http import fetch
 from ..common.models import RawEventSnapshot, RawMarketSnapshot, RawSelectionOdd
 
 log = structlog.get_logger()
 
-HOSTS = ["https://1xbet.com", "https://1xbet.ng", "https://1xbet.kz"]
+HOSTS = [
+    "https://1xstavka.ru",   # primario, JSON 200 dal VPS IT
+    "https://1xbet.ng",      # fallback Nigeria
+    "https://1xbet.kz",      # fallback Kazakistan
+]
 
 
 def _event_url(host: str) -> str:
     anti = int(time.time() * 1000)
-    return f"{host}/service-api/LiveFeed/Get1x2_VZip?sports=1&count=60&antiCacheStamp={anti}&lng=en"
+    return (
+        f"{host}/service-api/LiveFeed/Get1x2_VZip?"
+        f"sports=1&count=80&mode=4&antiCacheStamp={anti}&lng=en&tf=1000000"
+    )
 
 
-def _events_url(host: str) -> str:
+def _games_url(host: str) -> str:
     anti = int(time.time() * 1000)
-    return f"{host}/service-api/LiveFeed/GetTopGamesStatZip?sports=1&count=50&antiCacheStamp={anti}&lng=en"
+    return (
+        f"{host}/service-api/LiveFeed/GetGamesZip?"
+        f"sports=1&count=80&antiCacheStamp={anti}&lng=en&mode=4"
+    )
 
 
 def _parse_event(ev: dict) -> RawEventSnapshot | None:
-    """1xBet struct:
-      O1 = home team name, O2 = away team name
-      L  = league name
-      S  = start timestamp (sec)
-      E  = markets list: each {G: group_id, T: type, C: coeff}
-      Market IDs:
-        1: 1X2 (T=1 home, T=2 draw, T=3 away)
-        17: Total goals (T=9 Over 2.5, T=10 Under 2.5 with P=2.5)
-    """
     try:
         home = ev.get("O1") or ev.get("O1E") or ""
         away = ev.get("O2") or ev.get("O2E") or ""
@@ -61,14 +61,12 @@ def _parse_event(ev: dict) -> RawEventSnapshot | None:
         events_list = ev.get("E") or []
         markets_out: list[RawMarketSnapshot] = []
 
-        # 1X2
+        # 1X2 — G=1
         oh = od = oa = None
         for m in events_list:
             if m.get("G") == 1:
                 t = m.get("T")
                 c = m.get("C")
-                if not c:
-                    continue
                 try:
                     c = float(c)
                 except (TypeError, ValueError):
@@ -93,14 +91,12 @@ def _parse_event(ev: dict) -> RawEventSnapshot | None:
                 )
             )
 
-        # Over/Under 2.5 (group G=17, P=2.5)
+        # Over/Under 2.5 — G=17 P=2.5
         over = under = None
         for m in events_list:
             if m.get("G") == 17 and m.get("P") == 2.5:
                 t = m.get("T")
                 c = m.get("C")
-                if not c:
-                    continue
                 try:
                     c = float(c)
                 except (TypeError, ValueError):
@@ -142,17 +138,18 @@ def _parse_event(ev: dict) -> RawEventSnapshot | None:
         return None
 
 
-def fetch_live() -> list[RawEventSnapshot]:
+def _try_host(host: str) -> list[RawEventSnapshot]:
+    """Prova prima GetGamesZip (più dati), poi Get1x2_VZip."""
     out: list[RawEventSnapshot] = []
-    for host in HOSTS:
-        url = _event_url(host)
+    for url_fn, name in [(_games_url, "games"), (_event_url, "1x2")]:
+        url = url_fn(host)
         try:
-            txt = fetch(url, referer=f"{host}/en/live/football")
+            txt = fetch(url, referer=f"{host}/line/football")
             data = json.loads(txt)
-            events = data.get("Value") or data.get("value") or []
+            events = data.get("Value") or []
             if not isinstance(events, list):
                 continue
-            log.info("1xbet.fetched", host=host, count=len(events))
+            log.info("1xbet.fetched", host=host, endpoint=name, count=len(events))
             for ev in events:
                 if not isinstance(ev, dict):
                     continue
@@ -160,10 +157,17 @@ def fetch_live() -> list[RawEventSnapshot]:
                 if parsed:
                     out.append(parsed)
             if out:
-                break
+                return out
         except Exception as exc:  # noqa: BLE001
-            log.warning("1xbet.fetch_failed", host=host, error=str(exc))
-            polite_sleep(1, 2)
-            continue
+            log.warning("1xbet.fetch_failed", host=host, endpoint=name, error=str(exc))
+    return out
+
+
+def fetch_live() -> list[RawEventSnapshot]:
+    out: list[RawEventSnapshot] = []
+    for host in HOSTS:
+        out = _try_host(host)
+        if out:
+            break
     log.info("1xbet.done", snapshots=len(out))
     return out

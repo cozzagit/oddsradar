@@ -1,46 +1,33 @@
 /**
- * Trigger manuale degli scraper live (invocabile dal VPS via curl o dallo
- * scheduler). Non è lo scraper stesso (Python) — quello gira sempre in
- * background via PM2 `oddsradar-scraper`. Questo script dopo ingest esegue
- * la DIVERGENCE DETECTION su eventi con quote recenti e pubblica signal.
+ * PRICE-CHANGE scan: per ogni (book, evento, mercato, selezione) cerca
+ * variazioni significative della quota rispetto alla sua stessa storia
+ * recente. Genera segnale "quota cambiata" con direction + delta + baseline.
+ *
+ * Non fa più confronto cross-book (outlier statico).
  */
 import 'dotenv/config';
-import { and, eq, gte, desc } from 'drizzle-orm';
+import { eq, gte, desc } from 'drizzle-orm';
 import { db, schema } from '../src/lib/db';
-import {
-  detectOutliers,
-  detectUnilateralMoves,
-  detectMinorCluster,
-  type DivOdd,
-} from '../src/lib/detectors/divergence';
+import { detectPriceChanges, type TimedOdd } from '../src/lib/detectors/price-change';
 import { persistSignalIfNew, expireOldSignals } from '../src/lib/signals/persist';
 import { bookLabel, selectionLabel } from '../src/lib/signals/actionable';
-import { formatBetMessage, sendTelegram, telegramEnabled } from '../src/lib/notify/telegram';
+import { sendTelegram, telegramEnabled } from '../src/lib/notify/telegram';
 
 const SITE_URL = process.env.NEXTAUTH_URL ?? 'http://localhost:3041';
 const MAX_TG = Number(process.env.MAX_TELEGRAM_PER_RUN ?? '6');
-const WINDOW_MIN = Number(process.env.DIV_WINDOW_MIN ?? '15');
-const OUTLIER_Z = Number(process.env.DIV_OUTLIER_Z ?? '2.5');
-const UNI_PCT = Number(process.env.DIV_UNI_PCT ?? '0.08');
-
-const SHARP_SET = new Set(['pinnacle', 'betfair_ex', 'smarkets', 'matchbook', 'sbobet']);
-const SOFT_SET = new Set(['snai', 'goldbet', 'sisal', 'eurobet', 'bet365', 'unibet', 'williamhill', 'bwin', 'tipico', 'betway']);
-const MINOR_SET = new Set(['1xbet', 'mozzart', 'meridianbet', 'superbet', 'betano', 'fonbet', 'parimatch', 'sportybet', '188bet', 'dafabet', 'api_football_live', 'interwetten']);
-
-function classifyTier(slug: string): 'sharp' | 'soft' | 'minor' | 'unknown' {
-  if (SHARP_SET.has(slug)) return 'sharp';
-  if (SOFT_SET.has(slug)) return 'soft';
-  if (MINOR_SET.has(slug)) return 'minor';
-  return 'unknown';
-}
+const THRESHOLD = Number(process.env.PRICE_CHANGE_THRESHOLD ?? '0.05'); // 5%
+const BASELINE_MIN = Number(process.env.PRICE_BASELINE_MIN ?? '60');
+const RECENCY_MIN = Number(process.env.PRICE_RECENCY_MIN ?? '5');
+const HISTORY_LOOKBACK_MIN = BASELINE_MIN + 10;
 
 async function main() {
   const t0 = Date.now();
-  console.log(`[${new Date().toISOString()}] === DIVERGENCE scan ===`);
+  console.log(`[${new Date().toISOString()}] === PRICE-CHANGE scan ===`);
   await expireOldSignals();
 
-  // Eventi con quote negli ultimi WINDOW_MIN minuti (live o imminente)
-  const since = new Date(Date.now() - WINDOW_MIN * 60_000);
+  const since = new Date(Date.now() - HISTORY_LOOKBACK_MIN * 60_000);
+
+  // Prendo tutto lo storico recente unito a info evento/mercato
   const rows = await db
     .select({
       eventId: schema.oddsSnapshots.eventId,
@@ -60,15 +47,22 @@ async function main() {
     .where(gte(schema.oddsSnapshots.takenAt, since))
     .orderBy(desc(schema.oddsSnapshots.takenAt));
 
-  // Risolvo home/away/competition separatamente.
+  // Map eventId → meta
   const eventIds = Array.from(new Set(rows.map((r) => r.eventId)));
-  const eventsMeta = new Map<number, { home: string; away: string; kickoff: Date; competition: string }>();
+  const eventsMeta = new Map<
+    number,
+    { home: string; away: string; kickoff: Date; competition: string; isLiveNow: boolean }
+  >();
   if (eventIds.length > 0) {
     const allTeams = await db.select().from(schema.teams);
     const teamName = new Map(allTeams.map((t) => [t.id, t.nameCanonical]));
-    const allCompetitions = await db.select().from(schema.competitions);
-    const compName = new Map(allCompetitions.map((c) => [c.id, c.name]));
+    const allComp = await db.select().from(schema.competitions);
+    const compName = new Map(allComp.map((c) => [c.id, c.name]));
     const evRows = await db.select().from(schema.events);
+    const liveByEv = new Map<number, boolean>();
+    for (const r of rows) {
+      if (r.isInPlay) liveByEv.set(r.eventId, true);
+    }
     for (const ev of evRows) {
       if (!eventIds.includes(ev.id)) continue;
       eventsMeta.set(ev.id, {
@@ -76,218 +70,140 @@ async function main() {
         away: teamName.get(ev.awayTeamId) ?? '?',
         kickoff: ev.kickoffUtc,
         competition: compName.get(ev.competitionId) ?? '?',
+        isLiveNow: liveByEv.get(ev.id) ?? false,
       });
     }
   }
 
-  // Group per evento+mercato
-  type EventMarketKey = string;
-  const byEvMkt = new Map<EventMarketKey, {
-    eventId: number;
-    marketId: number;
-    marketName: string;
-    latest: DivOdd[];
-    history: DivOdd[];
-  }>();
-  const freshnessMs = 5 * 60_000; // "latest" = snapshot negli ultimi 5 min
-  const nowTs = Date.now();
-  const latestKeyByBookSel = new Map<string, DivOdd>(); // dedupe per (event, market, book, selection)
-
+  // Raggruppa per (evento+mercato) e invoca detector
+  type Key = string;
+  const byEvMkt = new Map<
+    Key,
+    {
+      eventId: number;
+      marketId: number;
+      marketName: string;
+      history: TimedOdd[];
+    }
+  >();
   for (const r of rows) {
     const k = `${r.eventId}:${r.marketId}`;
     if (!byEvMkt.has(k)) {
-      byEvMkt.set(k, {
-        eventId: r.eventId,
-        marketId: r.marketId,
-        marketName: r.marketName,
-        latest: [],
-        history: [],
-      });
+      byEvMkt.set(k, { eventId: r.eventId, marketId: r.marketId, marketName: r.marketName, history: [] });
     }
-    const entry = byEvMkt.get(k)!;
-    const d: DivOdd = {
+    byEvMkt.get(k)!.history.push({
+      takenAt: r.takenAt,
       bookSlug: r.bookSlug,
-      bookTier: classifyTier(r.bookSlug),
       selectionId: r.selectionId,
       selectionSlug: r.selectionSlug,
       odd: r.odd,
-      takenAt: r.takenAt,
-    };
-    entry.history.push(d);
-    const dedupKey = `${k}:${r.bookSlug}:${r.selectionId}`;
-    if (nowTs - r.takenAt.getTime() <= freshnessMs) {
-      const prev = latestKeyByBookSel.get(dedupKey);
-      if (!prev || r.takenAt > prev.takenAt) {
-        latestKeyByBookSel.set(dedupKey, d);
-      }
-    }
+    });
   }
 
-  // Attach latest filtrato per chiave unique
-  for (const [dedupKey, d] of latestKeyByBookSel) {
-    const [evId, mktId] = dedupKey.split(':');
-    const entry = byEvMkt.get(`${evId}:${mktId}`);
-    if (entry) entry.latest.push(d);
-  }
-
-  console.log(`  events×markets with recent data: ${byEvMkt.size}`);
+  console.log(`  scan ${byEvMkt.size} events×markets`);
 
   const [admin] = await db.select().from(schema.users).orderBy(schema.users.id).limit(1);
   const bankroll = Number(admin?.bankrollEur ?? 500);
 
-  let totalOutlier = 0;
-  let totalUnilateral = 0;
-  let totalCluster = 0;
-  let notified = 0;
+  // Raccogli tutti i segnali, ordina per magnitudo per notifiche
+  type Candidate = {
+    eventId: number;
+    marketId: number;
+    marketName: string;
+    meta: NonNullable<ReturnType<typeof eventsMeta.get>>;
+    sig: ReturnType<typeof detectPriceChanges>[number];
+  };
+  const candidates: Candidate[] = [];
 
   for (const [, entry] of byEvMkt) {
     const meta = eventsMeta.get(entry.eventId);
     if (!meta) continue;
+    // Se l'evento è già passato da più di 3 ore, skip
+    if (meta.kickoff.getTime() < Date.now() - 3 * 3600 * 1000) continue;
 
-    const outliers = detectOutliers(entry.latest, OUTLIER_Z);
-    const unilaterals = detectUnilateralMoves(entry.history, WINDOW_MIN, UNI_PCT);
-    const clusters = detectMinorCluster(entry.latest);
-
-    for (const o of outliers) {
-      const payload = {
-        kind: 'outlier' as const,
-        selectionSlug: o.selectionSlug,
-        fairOdd: o.crowdMeanOdd,
-        fairProb: 1 / o.crowdMeanOdd,
-        marketMedianOdd: o.crowdMeanOdd,
-        bestBookSlug: o.bookSlug,
-        bestBookOdd: o.outlierOdd,
-        confidence: Math.min(95, 55 + o.zscore * 10),
-        stakeEur: Number((bankroll * 0.01).toFixed(2)),
-        bankrollEur: bankroll,
-        reasoning: [o.reasoning],
-        scores: { sharpEdgeVsSoft: 0, steamScore: 0, minorsEdgeVsSharp: 0, publicMoneyScore: 0 },
-        soft: { bookCount: 0, meanOdd: 0, meanImpliedProb: 0 },
-        minors: { bookCount: o.bookCount, meanOdd: o.crowdMeanOdd },
-        marketName: entry.marketName,
-        divergenceType: 'outlier',
-      };
-      const id = await persistSignalIfNew({
-        type: 'bet',
-        eventId: entry.eventId,
-        marketId: entry.marketId,
-        selectionId: entry.latest.find((x) => x.selectionSlug === o.selectionSlug)?.selectionId,
-        edge: o.impliedEdgePct / 100,
-        payload: payload as unknown as Record<string, unknown>,
-        expiresAt: new Date(Date.now() + 10 * 60_000),
-      });
-      if (id) {
-        totalOutlier++;
-        if (telegramEnabled() && notified < MAX_TG) {
-          const sel = entry.latest.find((x) => x.selectionSlug === o.selectionSlug);
-          const ok = await sendTelegram(
-            `⚠️ <b>QUOTA PAZZA</b> · outlier ${o.zscore.toFixed(1)}σ\n` +
-              `${meta.home} – ${meta.away}\n<i>${entry.marketName}</i>\n\n` +
-              `👉 <b>${selectionLabel(o.selectionSlug, meta.home, meta.away)}</b>\n` +
-              `<b>${bookLabel(o.bookSlug)}</b> paga <code>${o.outlierOdd.toFixed(2)}</code> ` +
-              `(crowd ${o.crowdMeanOdd.toFixed(2)}, +${o.impliedEdgePct.toFixed(1)}%)\n\n` +
-              `• ${o.bookCount} altri book convergono su ${o.crowdMeanOdd.toFixed(2)}±${o.crowdStdev.toFixed(2)}\n` +
-              `• Z-score ${o.zscore.toFixed(1)} → outlier statistico\n\n` +
-              `<a href="${SITE_URL}/signals">Apri</a>`,
-          );
-          if (ok) notified++;
-        }
-      }
+    const signals = detectPriceChanges(entry.history, {
+      thresholdPct: THRESHOLD,
+      baselineWindowMinutes: BASELINE_MIN,
+      recencyMinutes: RECENCY_MIN,
+      minBaselineSamples: 3,
+      minRecentSamples: 1,
+      maxAgeMinutes: 8,
+    });
+    for (const s of signals) {
+      candidates.push({ eventId: entry.eventId, marketId: entry.marketId, marketName: entry.marketName, meta, sig: s });
     }
+  }
 
-    for (const u of unilaterals) {
-      const dir = u.movementPct < 0 ? '📉' : '📈';
-      const id = await persistSignalIfNew({
-        type: 'bet',
-        eventId: entry.eventId,
-        marketId: entry.marketId,
-        selectionId: entry.latest.find((x) => x.selectionSlug === u.selectionSlug)?.selectionId,
-        edge: Math.abs(u.movementPct) / 100,
-        payload: {
-          kind: 'unilateral',
-          selectionSlug: u.selectionSlug,
-          bestBookSlug: u.bookSlug,
-          bestBookOdd: u.newOdd,
-          marketMedianOdd: u.newOdd,
-          fairOdd: u.oldOdd,
-          fairProb: 1 / u.oldOdd,
-          confidence: Math.min(90, 60 + Math.abs(u.movementPct) * 2),
-          stakeEur: Number((bankroll * 0.01).toFixed(2)),
-          bankrollEur: bankroll,
-          reasoning: [u.reasoning],
-          scores: { sharpEdgeVsSoft: 0, steamScore: 1, minorsEdgeVsSharp: 0, publicMoneyScore: 0 },
-          soft: { bookCount: 0, meanOdd: 0, meanImpliedProb: 0 },
-          minors: { bookCount: 0, meanOdd: 0 },
-          marketName: entry.marketName,
-          divergenceType: 'unilateral',
-        } as unknown as Record<string, unknown>,
-        expiresAt: new Date(Date.now() + 10 * 60_000),
-      });
-      if (id) {
-        totalUnilateral++;
-        if (telegramEnabled() && notified < MAX_TG) {
-          const ok = await sendTelegram(
-            `${dir} <b>MOVIMENTO ISOLATO</b>\n` +
-              `${meta.home} – ${meta.away}\n<i>${entry.marketName}</i>\n\n` +
-              `👉 <b>${selectionLabel(u.selectionSlug, meta.home, meta.away)}</b>\n` +
-              `<b>${bookLabel(u.bookSlug)}</b>: ${u.oldOdd.toFixed(2)} → <code>${u.newOdd.toFixed(2)}</code> (${u.movementPct.toFixed(1)}%)\n\n` +
-              `• Altri book fermi (max ±${u.othersMovementPct.toFixed(1)}%)\n` +
-              `• Informazione asimmetrica / insider\n\n` +
-              `<a href="${SITE_URL}/signals">Apri</a>`,
-          );
-          if (ok) notified++;
-        }
-      }
-    }
+  candidates.sort((a, b) => Math.abs(b.sig.changePct) - Math.abs(a.sig.changePct));
 
-    for (const c of clusters) {
-      const id = await persistSignalIfNew({
-        type: 'bet',
-        eventId: entry.eventId,
-        marketId: entry.marketId,
-        selectionId: entry.latest.find((x) => x.selectionSlug === c.selectionSlug)?.selectionId,
-        edge: Math.abs(c.divergencePct) / 100,
-        payload: {
-          kind: 'minor_cluster',
-          selectionSlug: c.selectionSlug,
-          bestBookSlug: c.minorBooks[0],
-          bestBookOdd: c.minorMeanOdd,
-          marketMedianOdd: c.minorMeanOdd,
-          fairOdd: c.sharpMeanOdd,
-          fairProb: 1 / c.sharpMeanOdd,
-          confidence: Math.min(85, 60 + Math.abs(c.divergencePct)),
-          stakeEur: Number((bankroll * 0.01).toFixed(2)),
-          bankrollEur: bankroll,
-          reasoning: [c.reasoning],
-          scores: { sharpEdgeVsSoft: 0, steamScore: 0, minorsEdgeVsSharp: Math.abs(c.divergencePct) / 100, publicMoneyScore: 0 },
-          soft: { bookCount: 0, meanOdd: 0, meanImpliedProb: 0 },
-          minors: { bookCount: c.minorBooks.length, meanOdd: c.minorMeanOdd },
-          marketName: entry.marketName,
-          divergenceType: 'minor_cluster',
-        } as unknown as Record<string, unknown>,
-        expiresAt: new Date(Date.now() + 15 * 60_000),
+  let persisted = 0;
+  let notified = 0;
+
+  for (const c of candidates) {
+    const isLiveNow = c.meta.isLiveNow;
+    const payload = {
+      kind: 'price_change',
+      selectionSlug: c.sig.selectionSlug,
+      bookSlug: c.sig.bookSlug,
+      bestBookSlug: c.sig.bookSlug,
+      bestBookOdd: c.sig.currentOdd,
+      marketMedianOdd: c.sig.currentOdd,
+      fairOdd: c.sig.previousOdd,
+      fairProb: 1 / c.sig.previousOdd,
+      confidence: Math.min(95, 55 + Math.abs(c.sig.changePct) * 300),
+      stakeEur: Number((bankroll * 0.01).toFixed(2)),
+      bankrollEur: bankroll,
+      reasoning: [c.sig.reasoning],
+      scores: { sharpEdgeVsSoft: 0, steamScore: 1, minorsEdgeVsSharp: 0, publicMoneyScore: 0 },
+      soft: { bookCount: 0, meanOdd: 0, meanImpliedProb: 0 },
+      minors: { bookCount: 0, meanOdd: 0 },
+      marketName: c.marketName,
+      direction: c.sig.direction,
+      previousOdd: c.sig.previousOdd,
+      currentOdd: c.sig.currentOdd,
+      changePct: c.sig.changePct,
+      isLive: isLiveNow,
+    };
+
+    const newId = await persistSignalIfNew({
+      type: 'bet',
+      eventId: c.eventId,
+      marketId: c.marketId,
+      selectionId: c.sig.selectionId,
+      edge: Math.abs(c.sig.changePct),
+      payload: payload as unknown as Record<string, unknown>,
+      expiresAt: new Date(Date.now() + 10 * 60_000),
+    });
+    if (!newId) continue;
+    persisted++;
+
+    if (telegramEnabled() && notified < MAX_TG) {
+      const arrow = c.sig.direction === 'drop' ? '📉' : '📈';
+      const liveTag = isLiveNow ? '🔴 LIVE · ' : '';
+      const kickoffShort = c.meta.kickoff.toLocaleString('it-IT', {
+        weekday: 'short',
+        day: '2-digit',
+        month: 'short',
+        hour: '2-digit',
+        minute: '2-digit',
+        timeZone: 'Europe/Rome',
       });
-      if (id) {
-        totalCluster++;
-        if (telegramEnabled() && notified < MAX_TG) {
-          const ok = await sendTelegram(
-            `🕵️ <b>CLUSTER MINORI</b> · ${c.minorBooks.length} book allineati\n` +
-              `${meta.home} – ${meta.away}\n<i>${entry.marketName}</i>\n\n` +
-              `👉 <b>${selectionLabel(c.selectionSlug, meta.home, meta.away)}</b>\n` +
-              `Minori (${c.minorBooks.map((b) => bookLabel(b)).join(', ')}): <code>${c.minorMeanOdd.toFixed(2)}</code>\n` +
-              `Sharp: ${c.sharpMeanOdd.toFixed(2)} (${c.divergencePct >= 0 ? '+' : ''}${c.divergencePct.toFixed(1)}%)\n\n` +
-              `• Denaro coordinato tra book minori\n` +
-              `• Possibile fixing o flusso informativo locale\n\n` +
-              `<a href="${SITE_URL}/signals">Apri</a>`,
-          );
-          if (ok) notified++;
-        }
-      }
+      const text =
+        `⚫ <b>MOVIMENTO LOSCO</b> ${arrow} ${(c.sig.changePct * 100).toFixed(1)}%\n` +
+        `${liveTag}${c.meta.home} – ${c.meta.away}\n` +
+        `<i>${c.meta.competition} · ${c.marketName} · ${kickoffShort}</i>\n\n` +
+        `👉 <b>${selectionLabel(c.sig.selectionSlug, c.meta.home, c.meta.away)}</b> su <b>${bookLabel(c.sig.bookSlug)}</b>\n` +
+        `<code>${c.sig.previousOdd.toFixed(2)}</code> → <code>${c.sig.currentOdd.toFixed(2)}</code> ` +
+        `(${c.sig.direction === 'drop' ? 'scesa' : 'salita'} di <b>${Math.abs(c.sig.changePct * 100).toFixed(1)}%</b>)\n\n` +
+        `Baseline ~${c.sig.ageMinutesOld}min fa (${c.sig.samplesOld} snapshot), ora ${c.sig.recentSamples} snapshot recenti.\n\n` +
+        `<a href="${SITE_URL}/signals">Apri</a>`;
+      const ok = await sendTelegram(text);
+      if (ok) notified++;
     }
   }
 
   console.log(
-    `  ✓ outliers=${totalOutlier} unilateral=${totalUnilateral} cluster=${totalCluster} tg=${notified} in ${((Date.now() - t0) / 1000).toFixed(1)}s`,
+    `  ✓ price_change=${persisted} tg=${notified} in ${((Date.now() - t0) / 1000).toFixed(1)}s`,
   );
 }
 

@@ -50,14 +50,14 @@ def job_oddsportal_prematch() -> None:
 def main() -> None:
     scheduler = BlockingScheduler(timezone="UTC")
 
-    # Live scrapers ogni 2-3 min (loschi sono dati freschi)
-    scheduler.add_job(job_mozzart_live, "interval", minutes=2, id="mozzart", max_instances=1)
-    scheduler.add_job(job_sportybet_live, "interval", minutes=2, id="sportybet", max_instances=1, coalesce=True)
-    scheduler.add_job(job_superbet_live, "interval", minutes=2, id="superbet", max_instances=1, coalesce=True)
+    # Solo 1xbet (via 1xstavka.ru) conferma funzionante dal VPS senza proxy.
+    # Gli altri tre (Mozzart/SportyBet/SuperBet) sono bloccati da Cloudflare;
+    # tenuti disabled ma codice pronto per quando avremo proxy residenziali.
     scheduler.add_job(job_1xbet_live, "interval", minutes=2, id="1xbet", max_instances=1, coalesce=True)
 
-    # OddsPortal prematch ogni 15 min
-    scheduler.add_job(job_oddsportal_prematch, "interval", minutes=15, id="oddsportal", max_instances=1)
+    # OddsPortal prematch: anch'esso rende 0 eventi al momento, lo lascio
+    # disabled finché non calibriamo i selettori. Commentato per non sporcare log.
+    # scheduler.add_job(job_oddsportal_prematch, "interval", minutes=15, id="oddsportal", max_instances=1)
 
     def shutdown(*_):
         log.info("orchestrator.shutdown")
@@ -68,11 +68,7 @@ def main() -> None:
     signal.signal(signal.SIGTERM, shutdown)
 
     log.info("orchestrator.start")
-    # kickstart immediato (staggered per evitare burst)
-    job_mozzart_live()
-    job_sportybet_live()
-    job_superbet_live()
-    job_1xbet_live()
+    job_1xbet_live()  # kickstart solo quello che funziona
     scheduler.start()
 
 
