@@ -323,6 +323,12 @@ export const eventLiveStates = pgTable(
   }),
 );
 
+export const appSettings = pgTable('app_settings', {
+  key: varchar('key', { length: 64 }).primaryKey(),
+  value: jsonb('value').notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+});
+
 export const mappingReview = pgTable('mapping_review', {
   id: serial('id').primaryKey(),
   entityType: varchar('entity_type', { length: 32 }).notNull(), // team | event | market

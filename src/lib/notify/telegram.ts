@@ -1,3 +1,5 @@
+import { isNotificationsEnabled } from '@/lib/settings';
+
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
@@ -5,8 +7,12 @@ export function telegramEnabled(): boolean {
   return Boolean(TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID);
 }
 
-export async function sendTelegram(text: string, options: { silent?: boolean } = {}): Promise<boolean> {
+export async function sendTelegram(text: string, options: { silent?: boolean; force?: boolean } = {}): Promise<boolean> {
   if (!telegramEnabled()) return false;
+  if (!options.force) {
+    const enabled = await isNotificationsEnabled();
+    if (!enabled) return false;
+  }
   try {
     const r = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
       method: 'POST',

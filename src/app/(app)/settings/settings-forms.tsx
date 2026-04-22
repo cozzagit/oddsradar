@@ -1,6 +1,52 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useTransition } from 'react';
+import { useRouter } from 'next/navigation';
+
+export function NotificationsToggle({ initial }: { initial: boolean }) {
+  const router = useRouter();
+  const [enabled, setEnabled] = useState(initial);
+  const [pending, startTransition] = useTransition();
+
+  async function toggle() {
+    const next = !enabled;
+    setEnabled(next);
+    const r = await fetch('/api/settings/notifications', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: next }),
+    });
+    if (!r.ok) {
+      setEnabled(!next);
+      return;
+    }
+    startTransition(() => router.refresh());
+  }
+
+  return (
+    <div className="flex items-center gap-3">
+      <button
+        onClick={toggle}
+        disabled={pending}
+        className={
+          'relative h-8 w-16 rounded-full transition ' +
+          (enabled ? 'bg-emerald-500' : 'bg-zinc-700') +
+          (pending ? ' opacity-50' : '')
+        }
+      >
+        <span
+          className={
+            'absolute top-1 h-6 w-6 rounded-full bg-white transition-all ' +
+            (enabled ? 'left-9' : 'left-1')
+          }
+        />
+      </button>
+      <span className={'font-bold ' + (enabled ? 'text-emerald-400' : 'text-red-400')}>
+        {enabled ? 'ATTIVE' : 'IN PAUSA'}
+      </span>
+    </div>
+  );
+}
 
 export function TestTelegramButton() {
   const [status, setStatus] = useState<'idle' | 'loading' | 'ok' | 'error'>('idle');
