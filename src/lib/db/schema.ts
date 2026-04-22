@@ -16,7 +16,7 @@ import {
 } from 'drizzle-orm/pg-core';
 
 export const sourceTierEnum = pgEnum('source_tier', ['easy', 'medium', 'hard']);
-export const signalTypeEnum = pgEnum('signal_type', ['arb', 'value', 'steam']);
+export const signalTypeEnum = pgEnum('signal_type', ['arb', 'value', 'steam', 'bet']);
 export const signalStatusEnum = pgEnum('signal_status', ['active', 'expired', 'consumed']);
 export const eventStatusEnum = pgEnum('event_status', [
   'scheduled',
@@ -246,6 +246,7 @@ export const users = pgTable('users', {
   passwordHash: text('password_hash').notNull(),
   role: userRoleEnum('role').default('admin').notNull(),
   telegramChatId: varchar('telegram_chat_id', { length: 64 }),
+  bankrollEur: doublePrecision('bankroll_eur').default(500).notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 });
 

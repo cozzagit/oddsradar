@@ -10,7 +10,7 @@ export async function sendTelegram(text: string, options: { silent?: boolean } =
   try {
     const r = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json; charset=utf-8' },
       body: JSON.stringify({
         chat_id: TELEGRAM_CHAT_ID,
         text,
@@ -21,7 +21,7 @@ export async function sendTelegram(text: string, options: { silent?: boolean } =
     });
     if (!r.ok) {
       const body = await r.text();
-      console.warn('[telegram] HTTP', r.status, body.slice(0, 200));
+      console.warn('[telegram] HTTP', r.status, body.slice(0, 300));
       return false;
     }
     return true;
@@ -35,58 +35,37 @@ function esc(s: string | number | undefined | null): string {
   return String(s ?? '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c] as string);
 }
 
-export interface ArbMessageInput {
+export interface BestBetMessageInput {
   home: string;
   away: string;
   competition: string;
+  marketName: string;
   kickoffLocal: string;
-  edgePct: number;
-  guaranteedProfit: number;
-  totalStake: number;
-  legs: Array<{ label: string; bookName: string; odd: number; stake: number }>;
-  feasibility: 'easy' | 'medium' | 'hard';
-  url: string;
-}
-
-export function formatArbMessage(a: ArbMessageInput): string {
-  const feasEmoji = a.feasibility === 'easy' ? '✅' : a.feasibility === 'medium' ? '⚠️' : '🔴';
-  const legsText = a.legs
-    .map((l) => `  • <b>${esc(l.label)}</b> — €${l.stake.toFixed(2)} su ${esc(l.bookName)} @ ${l.odd.toFixed(2)}`)
-    .join('\n');
-  return (
-    `🎯 <b>ARBITRAGGIO +${a.edgePct}%</b> ${feasEmoji}\n` +
-    `${esc(a.home)} vs ${esc(a.away)}\n` +
-    `<i>${esc(a.competition)} · ${esc(a.kickoffLocal)}</i>\n\n` +
-    `<b>Profitto garantito: €${a.guaranteedProfit.toFixed(2)}</b> su €${a.totalStake}\n\n` +
-    `${legsText}\n\n` +
-    `<a href="${a.url}">Apri su OddsRadar</a>`
-  );
-}
-
-export interface ValueMessageInput {
-  home: string;
-  away: string;
-  competition: string;
-  kickoffLocal: string;
-  label: string;
-  bookName: string;
-  offeredOdd: number;
+  selectionLabel: string;
   fairOdd: number;
-  edgePct: number;
-  fairProbPct: number;
-  suggestedStakePctBankroll: number;
+  marketMedianOdd: number;
+  bestBookName: string;
+  bestBookOdd: number;
+  confidence: number;
+  stakeEur: number;
+  bankrollEur: number;
+  reasoning: string[];
   url: string;
 }
 
-export function formatValueMessage(v: ValueMessageInput): string {
+export function formatBestBetMessage(b: BestBetMessageInput): string {
+  const stakePct = ((b.stakeEur / b.bankrollEur) * 100).toFixed(1);
+  const bullets = b.reasoning.map((r) => `• ${r}`).join('\n');
   return (
-    `💎 <b>VALUE BET +${v.edgePct}%</b>\n` +
-    `${esc(v.home)} vs ${esc(v.away)}\n` +
-    `<i>${esc(v.competition)} · ${esc(v.kickoffLocal)}</i>\n\n` +
-    `Punta su <b>${esc(v.label)} @ ${v.offeredOdd.toFixed(2)}</b>\n` +
-    `su ${esc(v.bookName)}\n\n` +
-    `Quota giusta: ${v.fairOdd.toFixed(2)} (prob. reale ${v.fairProbPct.toFixed(1)}%)\n` +
-    `Stake suggerito: ${v.suggestedStakePctBankroll.toFixed(2)}% del bankroll\n\n` +
-    `<a href="${v.url}">Apri su OddsRadar</a>`
+    `🎯 <b>SCOMMESSA CONSIGLIATA</b> · Confidence <b>${Math.round(b.confidence)}/100</b>\n` +
+    `${esc(b.home)} vs ${esc(b.away)}\n` +
+    `<i>${esc(b.competition)} · ${esc(b.marketName)} · ${esc(b.kickoffLocal)}</i>\n\n` +
+    `👉 Gioca: <b>${esc(b.selectionLabel)}</b>\n` +
+    `💶 Stake: <b>€${b.stakeEur.toFixed(2)}</b> (${stakePct}% del bankroll €${b.bankrollEur})\n\n` +
+    `Quota mediana di mercato: ${b.marketMedianOdd.toFixed(2)}\n` +
+    `Quota "giusta" (fair): ${b.fairOdd.toFixed(2)}\n` +
+    `Miglior quota disponibile: ${b.bestBookOdd.toFixed(2)} su ${esc(b.bestBookName)}\n\n` +
+    `<b>Perché:</b>\n${bullets}\n\n` +
+    `<a href="${b.url}">Apri OddsRadar</a>`
   );
 }
