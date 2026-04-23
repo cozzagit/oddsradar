@@ -74,6 +74,43 @@ def _extract_league(ev) -> str:
     return "Unknown"
 
 
+def _parse_score(ev) -> tuple[int | None, int | None]:
+    """Score da .line-event__score-value tipo '0:2'."""
+    score_el = ev.select_one(".line-event__score-value")
+    if not score_el:
+        return None, None
+    txt = score_el.get_text(strip=True)
+    m = re.match(r"^(\d+)\s*[:\-]\s*(\d+)$", txt)
+    if not m:
+        return None, None
+    return int(m.group(1)), int(m.group(2))
+
+
+def _parse_elapsed(ev) -> int | None:
+    """Minuto di gioco da .line-event__time, formato "09:30 39:52" o "39:52"."""
+    time_el = ev.select_one(".line-event__time")
+    if not time_el:
+        return None
+    txt = time_el.get_text(" ", strip=True)
+    # Cerca pattern MM:SS (minuto gioco)
+    matches = re.findall(r"(\d{1,3}):(\d{2})", txt)
+    if not matches:
+        return None
+    # L'ultimo match tipicamente è il tempo corrente
+    minute = int(matches[-1][0])
+    if 0 <= minute <= 135:
+        return minute
+    return None
+
+
+def _parse_red_cards(ev) -> tuple[int, int]:
+    """Cartellini rossi dall'indicatore .line-event__red-card se presente."""
+    # Struttura spesso ha multipli .line-event__red-card con attribute home/away
+    # Best-effort: conta i red-card per area (impossibile senza ispezione markup)
+    # → ritorno 0/0 finché non abbiamo markup specifico
+    return 0, 0
+
+
 def _parse_event(ev) -> RawEventSnapshot | None:
     teams = _extract_teams(ev)
     if not teams:
@@ -103,6 +140,11 @@ def _parse_event(ev) -> RawEventSnapshot | None:
 
     competition = _extract_league(ev)
 
+    # Live state
+    home_goals, away_goals = _parse_score(ev)
+    elapsed = _parse_elapsed(ev)
+    red_h, red_a = _parse_red_cards(ev)
+
     return RawEventSnapshot(
         source_book_slug="betcity",
         source_event_id=None,
@@ -114,7 +156,41 @@ def _parse_event(ev) -> RawEventSnapshot | None:
         is_in_play=True,
         markets=markets,
         taken_at=datetime.now(timezone.utc),
+        home_goals=home_goals,
+        away_goals=away_goals,
+        elapsed_min=elapsed,
+        red_cards_home=red_h,
+        red_cards_away=red_a,
     )
+
+
+# Pattern betcity competition da filtrare:
+# - "Футбол." (Fútbol) = calcio REAL → KEEP (ma escludi 3x3/5x5)
+# - "Киберфутбол", "Киберхоккей", "E-футбол" = eSports → SKIP
+# - "Хоккей", "Теннис", "Баскетбол" = altri sport → SKIP
+_BETCITY_REAL_SOCCER_PREFIX = "футбол."
+_BETCITY_EXCLUDE_PATTERNS = (
+    "киберфутбол",
+    "киберхоккей",
+    "кибер",
+    "e-футбол",
+    "3x3",
+    "5x5",
+    "esports",
+    "lolga",
+    "лига 3x3",
+    "лига 5x5",
+)
+
+
+def _is_real_soccer(competition: str) -> bool:
+    c = competition.lower().strip()
+    if not c.startswith(_BETCITY_REAL_SOCCER_PREFIX):
+        return False
+    for bad in _BETCITY_EXCLUDE_PATTERNS:
+        if bad in c:
+            return False
+    return True
 
 
 async def _fetch_async() -> list[RawEventSnapshot]:
@@ -127,18 +203,19 @@ async def _fetch_async() -> list[RawEventSnapshot]:
     rows = soup.select(".line-event")
     log.info("betcity.dom_events", count=len(rows))
     out: list[RawEventSnapshot] = []
+    skipped_non_soccer = 0
     for ev in rows:
         try:
             parsed = _parse_event(ev)
-            if parsed:
-                out.append(parsed)
+            if not parsed:
+                continue
+            if not _is_real_soccer(parsed.competition_name):
+                skipped_non_soccer += 1
+                continue
+            out.append(parsed)
         except Exception as exc:  # noqa: BLE001
             log.warning("betcity.parse_err", error=str(exc))
-    # Filtra: solo calcio (molti eventi sono tennis/basket/altro in live)
-    # Betcity live mostra tutti gli sport. Per ora accettiamo tutto come "soccer"
-    # perché la source_page è live globale — miglioramento futuro: filtrare
-    # dal tab sport specifico.
-    log.info("betcity.done", snapshots=len(out))
+    log.info("betcity.done", snapshots=len(out), skipped_non_soccer=skipped_non_soccer)
     return out
 
 

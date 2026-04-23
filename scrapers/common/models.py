@@ -27,3 +27,9 @@ class RawEventSnapshot(BaseModel):
     markets: list[RawMarketSnapshot]
     taken_at: datetime
     raw: dict[str, Any] | None = None
+    # Live state (opzionali, per detector filter)
+    home_goals: int | None = None
+    away_goals: int | None = None
+    elapsed_min: int | None = None
+    red_cards_home: int | None = None
+    red_cards_away: int | None = None

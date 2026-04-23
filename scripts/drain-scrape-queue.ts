@@ -45,6 +45,12 @@ type RawSnapshot = {
     selections: Array<{ selection_name: string; odd: number }>;
   }>;
   taken_at: string;
+  is_in_play?: boolean;
+  home_goals?: number | null;
+  away_goals?: number | null;
+  elapsed_min?: number | null;
+  red_cards_home?: number | null;
+  red_cards_away?: number | null;
 };
 
 async function processOne(snap: RawSnapshot): Promise<number> {
@@ -107,6 +113,25 @@ async function processOne(snap: RawSnapshot): Promise<number> {
 
   if (toInsert.length === 0) return 0;
   await db.insert(schema.oddsSnapshots).values(toInsert);
+
+  // Event live state (se scraper ha fornito goals/elapsed)
+  if (snap.is_in_play && (snap.home_goals != null || snap.elapsed_min != null)) {
+    try {
+      await db.insert(schema.eventLiveStates).values({
+        eventId,
+        takenAt,
+        homeGoals: snap.home_goals ?? null,
+        awayGoals: snap.away_goals ?? null,
+        elapsedMin: snap.elapsed_min ?? null,
+        status: 'in_play',
+        redCardsHome: snap.red_cards_home ?? 0,
+        redCardsAway: snap.red_cards_away ?? 0,
+      });
+    } catch {
+      // non blocca l'ingestion odds se la state insert fallisce
+    }
+  }
+
   return toInsert.length;
 }
 
