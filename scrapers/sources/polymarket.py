@@ -78,14 +78,22 @@ def _parse_outcomes(raw) -> list[str]:
 
 
 def _normalize_name(s: str) -> str:
-    return (
-        s.lower()
-        .replace(" fc", "")
-        .replace(" cf", "")
-        .replace(" afc", "")
-        .replace(" sc", "")
-        .strip()
-    )
+    t = s.lower()
+    for pat in (" fc", " cf", " afc", " sc", "ca ", "cs ", "cd ", "sd ", "ac ", "asd "):
+        t = t.replace(pat, " ")
+    return " ".join(t.split())
+
+
+def _team_matches(team_norm: str, title: str) -> bool:
+    """Match bidirezionale + word-level (es. 'Boca Juniors' vs 'CA Boca Juniors')."""
+    if not team_norm or not title:
+        return False
+    t = title.lower()
+    if team_norm in t or t in team_norm:
+        return True
+    team_words = {w for w in team_norm.split() if len(w) > 3}
+    title_words = {w for w in t.split() if len(w) > 3}
+    return bool(team_words & title_words)
 
 
 def _event_to_snapshot(event: dict) -> RawEventSnapshot | None:
@@ -134,11 +142,11 @@ def _event_to_snapshot(event: dict) -> RawEventSnapshot | None:
 
             # Moneyline
             if mtype == "moneyline":
-                if "draw" in gtitle or "draw" in question:
+                if "draw" in gtitle or "draw" in question or "pareggio" in gtitle:
                     draw_prob = yes
-                elif home_norm and home_norm in gtitle:
+                elif _team_matches(home_norm, gtitle) or _team_matches(home_norm, question):
                     home_prob = yes
-                elif away_norm and away_norm in gtitle:
+                elif _team_matches(away_norm, gtitle) or _team_matches(away_norm, question):
                     away_prob = yes
 
             # Totals 2.5
