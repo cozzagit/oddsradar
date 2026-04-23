@@ -209,32 +209,52 @@ def _event_to_snapshot(event: dict) -> RawEventSnapshot | None:
         return None
 
 
-def fetch_prematch() -> list[RawEventSnapshot]:
-    """Fetch tutti gli eventi soccer Polymarket attivi."""
+def _fetch_tag(tag_id: int, limit: int = 100) -> list[dict]:
     try:
         events = _get(
             "/events",
             {
-                "tag_id": TAG_ALL_SOCCER,
+                "tag_id": tag_id,
                 "active": "true",
                 "closed": "false",
-                "limit": 100,
+                "limit": limit,
                 "order": "startDate",
                 "ascending": "true",
             },
         )
+        return events if isinstance(events, list) else []
     except Exception as exc:  # noqa: BLE001
-        log.warning("polymarket.fetch_failed", error=str(exc))
+        log.warning("polymarket.tag_fetch_failed", tag_id=tag_id, error=str(exc))
         return []
 
-    if not isinstance(events, list):
-        return []
 
-    log.info("polymarket.events_fetched", count=len(events))
+def fetch_prematch() -> list[RawEventSnapshot]:
+    """Fetch Polymarket events da tag globale + singole leghe.
+    Più leghe = più match individuali (il tag globale include anche futures/
+    tournament winners senza teams[])."""
+    seen_ids: set[str] = set()
     out: list[RawEventSnapshot] = []
-    for ev in events:
+    all_events: list[dict] = []
+
+    # 1. Global soccer tag
+    all_events.extend(_fetch_tag(TAG_ALL_SOCCER, limit=100))
+
+    # 2. Per-lega (include più partite singole che il globale tronca)
+    for league_name, tag_id in LEAGUE_TAGS.items():
+        league_events = _fetch_tag(tag_id, limit=50)
+        log.info("polymarket.league_fetched", league=league_name, count=len(league_events))
+        all_events.extend(league_events)
+
+    log.info("polymarket.events_fetched", total=len(all_events))
+
+    for ev in all_events:
         if not isinstance(ev, dict):
             continue
+        ev_id = str(ev.get("id") or "")
+        if ev_id and ev_id in seen_ids:
+            continue
+        if ev_id:
+            seen_ids.add(ev_id)
         parsed = _event_to_snapshot(ev)
         if parsed:
             out.append(parsed)

@@ -59,19 +59,16 @@ def _extract_teams(ev) -> tuple[str, str] | None:
 
 
 def _extract_league(ev) -> str:
-    """Cerca il titolo lega nel parent container."""
+    """Cerca il titolo lega nel container .line__champ parent."""
     cur = ev.parent
-    for _ in range(5):
+    for _ in range(6):
         if cur is None:
             break
-        # Pattern comuni Angular Material list group heading
-        sel = cur.select_one(
-            ".line-tournament__title, .tournament__name, .line-champ__name, "
-            "[class*='tournament-title'], [class*='champ']"
-        )
-        if sel:
-            txt = sel.get_text(strip=True)
-            if txt and len(txt) < 80:
+        # Priorità 1: sibling diretto .line-champ__header-name dentro .line__champ
+        name_el = cur.select_one(".line-champ__header-name")
+        if name_el:
+            txt = name_el.get_text(" ", strip=True)
+            if txt and len(txt) < 120:
                 return txt
         cur = cur.parent
     return "Unknown"

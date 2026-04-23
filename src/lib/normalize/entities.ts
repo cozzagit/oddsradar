@@ -1,13 +1,33 @@
 import { and, eq, sql } from 'drizzle-orm';
 import { db, schema } from '@/lib/db';
 
+/**
+ * Normalize team name: rimuove prefissi/suffissi club comuni per migliorare
+ * il matching cross-book (CA Boca Juniors vs Boca Juniors, Juventus FC vs
+ * Juventus).
+ */
+function normalizeForMatch(name: string): string {
+  let t = name.toLowerCase().trim();
+  // Rimuove prefissi club (CA, CS, CD, SD, AC, ASD, FC, AFC)
+  for (const prefix of ['ca ', 'cs ', 'cd ', 'sd ', 'ac ', 'asd ', 'fc ', 'afc ']) {
+    if (t.startsWith(prefix)) t = t.slice(prefix.length);
+  }
+  // Rimuove suffissi club (FC, CF, AFC, SC)
+  for (const suffix of [' fc', ' cf', ' afc', ' sc']) {
+    if (t.endsWith(suffix)) t = t.slice(0, -suffix.length);
+  }
+  return t.trim();
+}
+
 export async function findOrCreateTeam(
   sportId: number,
   rawName: string,
 ): Promise<{ id: number; created: boolean }> {
   const normalized = rawName.trim();
   const lc = normalized.toLowerCase();
+  const forMatch = normalizeForMatch(normalized);
 
+  // 1. Exact alias match (lowercased)
   const [alias] = await db
     .select({ id: schema.teamAliases.teamId })
     .from(schema.teamAliases)
@@ -15,6 +35,7 @@ export async function findOrCreateTeam(
     .limit(1);
   if (alias) return { id: alias.id, created: false };
 
+  // 2. Exact canonical match within sport
   const [existing] = await db
     .select({ id: schema.teams.id })
     .from(schema.teams)
@@ -33,6 +54,40 @@ export async function findOrCreateTeam(
     return { id: existing.id, created: false };
   }
 
+  // 3. Trigram similarity match (pg_trgm) sulle ALIAS esistenti.
+  // Threshold 0.55 evita falsi positivi tipo "Barcelona" vs "Barcelona B".
+  // Confronto su forma normalizzata per catturare CA Boca vs Boca.
+  if (forMatch.length >= 4) {
+    const trgmMatches = await db.execute(
+      sql`
+        SELECT DISTINCT ta.team_id as id,
+               similarity(lower(ta.alias), ${forMatch}) as score,
+               t.name_canonical
+        FROM team_aliases ta
+        JOIN teams t ON t.id = ta.team_id
+        WHERE t.sport_id = ${sportId}
+          AND similarity(lower(ta.alias), ${forMatch}) > 0.55
+        ORDER BY score DESC
+        LIMIT 1
+      `,
+    );
+    const row = (trgmMatches as unknown as { rows: Array<{ id: number; score: number }> }).rows?.[0]
+      ?? (trgmMatches as unknown as Array<{ id: number; score: number }>)[0];
+    if (row && row.id) {
+      await db
+        .insert(schema.teamAliases)
+        .values({
+          teamId: row.id,
+          alias: normalized,
+          confidence: Number(row.score) || 0.6,
+          verified: false,
+        })
+        .onConflictDoNothing();
+      return { id: row.id, created: false };
+    }
+  }
+
+  // 4. Nuovo team
   const [created] = await db
     .insert(schema.teams)
     .values({ sportId, nameCanonical: normalized })
