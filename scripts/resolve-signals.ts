@@ -4,7 +4,7 @@
  * won/lost/void. Simula profit con stake €10 fisso + bankroll €1000.
  */
 import 'dotenv/config';
-import { and, eq, lt, or, isNotNull, sql, inArray } from 'drizzle-orm';
+import { and, eq, gt, lt, inArray } from 'drizzle-orm';
 import { db, schema } from '../src/lib/db';
 import { resolveOutcome, simulateProfit, type Outcome } from '../src/lib/signals/resolver';
 
@@ -92,7 +92,7 @@ async function main() {
       and(
         eq(schema.signals.outcome, 'pending'),
         lt(schema.events.kickoffUtc, cutoff),
-        sql`${schema.events.kickoffUtc} > ${lookback}`,
+        gt(schema.events.kickoffUtc, lookback),
       ),
     );
 
