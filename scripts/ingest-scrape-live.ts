@@ -21,9 +21,12 @@ import { isNotificationsEnabled } from '../src/lib/settings';
 
 const SITE_URL = process.env.NEXTAUTH_URL ?? 'http://localhost:3041';
 const MAX_TG = Number(process.env.MAX_TELEGRAM_PER_RUN ?? '6');
-const THRESHOLD = Number(process.env.PRICE_CHANGE_THRESHOLD ?? '0.05'); // 5%
+const THRESHOLD = Number(process.env.PRICE_CHANGE_THRESHOLD ?? '0.08'); // 8% (era 5%)
 const BASELINE_MIN = Number(process.env.PRICE_BASELINE_MIN ?? '60');
 const RECENCY_MIN = Number(process.env.PRICE_RECENCY_MIN ?? '5');
+// Min confidence per permettere il persist: dati admin mostrano che price_change
+// con confidence < 78 ha ROI -24%. Filtriamo solo alti.
+const MIN_PRICE_CHANGE_CONFIDENCE = Number(process.env.PRICE_CHANGE_MIN_CONFIDENCE ?? '78');
 const HISTORY_LOOKBACK_MIN = BASELINE_MIN + 10;
 
 async function main() {
@@ -188,6 +191,11 @@ async function main() {
       skippedMarketConsensus++;
       continue;
     }
+    // Confidence ricalibrata: dati storici mostrano che 85+ ha ROI -40%.
+    // Cap a 80 e minima a 65 per evitare overconfidence dei price_change.
+    const computedConfidence = Math.min(80, 60 + Math.abs(c.sig.changePct) * 200);
+    if (computedConfidence < MIN_PRICE_CHANGE_CONFIDENCE) continue;
+
     const payload = {
       kind: 'price_change',
       selectionSlug: c.sig.selectionSlug,
@@ -197,7 +205,7 @@ async function main() {
       marketMedianOdd: c.sig.currentOdd,
       fairOdd: c.sig.previousOdd,
       fairProb: 1 / c.sig.previousOdd,
-      confidence: Math.min(95, 55 + Math.abs(c.sig.changePct) * 300),
+      confidence: computedConfidence,
       stakeEur: Number((bankroll * 0.01).toFixed(2)),
       bankrollEur: bankroll,
       reasoning: [c.sig.reasoning],
