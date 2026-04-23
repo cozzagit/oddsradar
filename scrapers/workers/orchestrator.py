@@ -17,6 +17,7 @@ from ..sources import (
     oddsportal,
     onexbet,
     polymarket,
+    premierbet,
     soccerbet,
     sportybet,
     superbet,
@@ -47,6 +48,10 @@ def job_betcity_live() -> None:
 
 def job_polymarket() -> None:
     _run_source("polymarket", polymarket.fetch_prematch)
+
+
+def job_premierbet_live() -> None:
+    _run_source("premierbet_live", premierbet.fetch_live)
 
 
 # Disabled (bloccati da Cloudflare / endpoint 404). Codice pronto per riuso con proxy.
@@ -82,6 +87,8 @@ def main() -> None:
     scheduler.add_job(job_betcity_live, "interval", minutes=3, id="betcity", max_instances=1, coalesce=True)
     # Polymarket prediction market — prematch, utenti reali USDC. Ogni 5 min.
     scheduler.add_job(job_polymarket, "interval", minutes=5, id="polymarket", max_instances=1, coalesce=True)
+    # PremierBet Angola — Playwright DOM, book africano portoghese ben coperto.
+    scheduler.add_job(job_premierbet_live, "interval", minutes=3, id="premierbet", max_instances=1, coalesce=True)
 
     def shutdown(*_):
         log.info("orchestrator.shutdown")
@@ -95,6 +102,7 @@ def main() -> None:
     job_1xbet_live()
     job_betcity_live()
     job_polymarket()
+    job_premierbet_live()
     scheduler.start()
 
 

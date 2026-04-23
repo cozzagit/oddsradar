@@ -80,6 +80,7 @@ async function seed() {
       { slug: 'polymarket', name: 'Polymarket', country: 'USA', tier: 'easy', isSharp: true },
       { slug: 'melbet', name: 'Melbet', country: 'NGA', tier: 'hard' },
       { slug: 'soccerbet', name: 'Soccerbet', country: 'SRB', tier: 'medium' },
+      { slug: 'premierbet', name: 'PremierBet Angola', country: 'AGO', tier: 'hard' },
       { slug: 'mozzart', name: 'Mozzart Bet', country: 'SRB', tier: 'medium' },
       { slug: 'meridianbet', name: 'Meridianbet', country: 'MNE', tier: 'medium' },
       { slug: 'superbet', name: 'SuperBet', country: 'ROU', tier: 'medium' },
