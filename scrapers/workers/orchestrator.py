@@ -62,10 +62,11 @@ def main() -> None:
     # Gli altri tre (Mozzart/SportyBet/SuperBet) sono bloccati da Cloudflare;
     # tenuti disabled ma codice pronto per quando avremo proxy residenziali.
     scheduler.add_job(job_1xbet_live, "interval", minutes=2, id="1xbet", max_instances=1, coalesce=True)
-    # melbet via Playwright: più lento, ogni 3 min
-    scheduler.add_job(job_melbet_live, "interval", minutes=3, id="melbet", max_instances=1, coalesce=True)
-    # soccerbet: REST pubblico, ogni 2 min
-    scheduler.add_job(job_soccerbet_live, "interval", minutes=2, id="soccerbet", max_instances=1, coalesce=True)
+    # melbet Playwright: CF re-challenge sull'API anche dopo bypass landing. Disabled
+    # finché non riscritto per parsare il DOM live (invece di chiamare /service-api/).
+    # scheduler.add_job(job_melbet_live, "interval", minutes=3, id="melbet", max_instances=1, coaleske=True)
+    # soccerbet: path /restapi/ tornano 404. Serve re-scoperta endpoint. Disabled.
+    # scheduler.add_job(job_soccerbet_live, "interval", minutes=2, id="soccerbet", max_instances=1, coalesce=True)
 
     # OddsPortal prematch: anch'esso rende 0 eventi al momento, lo lascio
     # disabled finché non calibriamo i selettori. Commentato per non sporcare log.
@@ -80,10 +81,7 @@ def main() -> None:
     signal.signal(signal.SIGTERM, shutdown)
 
     log.info("orchestrator.start")
-    # Kickstart tutti (staggered via APScheduler jobs)
     job_1xbet_live()
-    job_soccerbet_live()
-    # melbet è lento, lo lascio partire al primo tick
     scheduler.start()
 
 
