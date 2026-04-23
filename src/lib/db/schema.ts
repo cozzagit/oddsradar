@@ -339,6 +339,15 @@ export const appSettings = pgTable('app_settings', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
+export const kindDisabled = pgTable('kind_disabled', {
+  kindKey: varchar('kind_key', { length: 64 }).primaryKey(),
+  disabledAt: timestamp('disabled_at', { withTimezone: true }).defaultNow().notNull(),
+  reason: text('reason'),
+  resolvedCount: integer('resolved_count'),
+  winRate: doublePrecision('win_rate'),
+  manual: boolean('manual').default(false).notNull(),
+});
+
 export const mappingReview = pgTable('mapping_review', {
   id: serial('id').primaryKey(),
   entityType: varchar('entity_type', { length: 32 }).notNull(), // team | event | market

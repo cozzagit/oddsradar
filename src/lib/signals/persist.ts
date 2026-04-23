@@ -1,6 +1,21 @@
 import { and, eq, gte, isNotNull, lte } from 'drizzle-orm';
 import { db, schema } from '@/lib/db';
 
+// In-memory cache dei kind disabled (TTL 60s)
+let disabledCache: { set: Set<string>; ts: number } | null = null;
+
+async function getDisabledKinds(): Promise<Set<string>> {
+  if (disabledCache && Date.now() - disabledCache.ts < 60_000) return disabledCache.set;
+  try {
+    const rows = await db.select({ k: schema.kindDisabled.kindKey }).from(schema.kindDisabled);
+    const set = new Set(rows.map((r) => r.k));
+    disabledCache = { set, ts: Date.now() };
+    return set;
+  } catch {
+    return new Set();
+  }
+}
+
 const DEFAULT_DEDUP_MS = 60 * 60_000; // 60 min
 
 interface PersistInput {
@@ -16,6 +31,12 @@ interface PersistInput {
 
 /** Returns id of new signal or null if a recent duplicate already exists. */
 export async function persistSignalIfNew(input: PersistInput): Promise<number | null> {
+  // Kill-switch check
+  const kind = (input.payload?.kind as string) ?? null;
+  const kindKey = `${input.type}${kind ? ':' + kind : ''}`;
+  const disabled = await getDisabledKinds();
+  if (disabled.has(kindKey)) return null;
+
   const windowMs = input.dedupWindowMs ?? DEFAULT_DEDUP_MS;
   const sinceTs = new Date(Date.now() - windowMs);
   // Dedup guarda TUTTI i signal (active o expired) recenti per evitare
