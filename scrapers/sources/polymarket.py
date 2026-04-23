@@ -157,6 +157,33 @@ def _event_to_snapshot(event: dict) -> RawEventSnapshot | None:
                     elif "under" in question or "under" in slug:
                         under_prob = yes
 
+        # Parse volume per market: Polymarket fornisce volume e liquidity
+        # ad ogni market. Li propaghiamo nelle singole selections per tracking.
+        market_volumes: dict[str, dict[str, float]] = {}  # key = 'home'/'draw'/'away'/'over'/'under'
+        for market in event.get("markets", []) or []:
+            if not market.get("active") or market.get("closed"):
+                continue
+            mtype = (market.get("sportsMarketType") or "").lower()
+            gtitle = (market.get("groupItemTitle") or "").lower()
+            question = (market.get("question") or "").lower()
+            vol = float(market.get("volume") or 0)
+            liq = float(market.get("liquidity") or 0)
+            if mtype == "moneyline":
+                if "draw" in gtitle or "draw" in question:
+                    market_volumes["draw"] = {"vol": vol, "liq": liq}
+                elif _team_matches(home_norm, gtitle) or _team_matches(home_norm, question):
+                    market_volumes["home"] = {"vol": vol, "liq": liq}
+                elif _team_matches(away_norm, gtitle) or _team_matches(away_norm, question):
+                    market_volumes["away"] = {"vol": vol, "liq": liq}
+
+        def _vol(sel: str) -> float | None:
+            v = market_volumes.get(sel)
+            return v["vol"] if v else None
+
+        def _liq(sel: str) -> float | None:
+            v = market_volumes.get(sel)
+            return v["liq"] if v else None
+
         markets_out: list[RawMarketSnapshot] = []
 
         if home_prob and draw_prob and away_prob:
@@ -169,9 +196,12 @@ def _event_to_snapshot(event: dict) -> RawEventSnapshot | None:
                 RawMarketSnapshot(
                     market_name="h2h",
                     selections=[
-                        RawSelectionOdd(selection_name="home", odd=to_odd(home_prob)),
-                        RawSelectionOdd(selection_name="draw", odd=to_odd(draw_prob)),
-                        RawSelectionOdd(selection_name="away", odd=to_odd(away_prob)),
+                        RawSelectionOdd(selection_name="home", odd=to_odd(home_prob),
+                                        matched_volume=_vol("home"), liquidity=_liq("home")),
+                        RawSelectionOdd(selection_name="draw", odd=to_odd(draw_prob),
+                                        matched_volume=_vol("draw"), liquidity=_liq("draw")),
+                        RawSelectionOdd(selection_name="away", odd=to_odd(away_prob),
+                                        matched_volume=_vol("away"), liquidity=_liq("away")),
                     ],
                 )
             )

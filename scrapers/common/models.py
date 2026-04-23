@@ -8,6 +8,11 @@ class RawSelectionOdd(BaseModel):
     selection_name: str  # raw string from source, to be normalized downstream
     odd: float
     is_lay: bool = False
+    # Volume tracking (smart money)
+    matched_volume: float | None = None  # denaro matched su questa selection
+    back_best: float | None = None       # miglior quota back (per exchange)
+    lay_best: float | None = None        # miglior quota lay (per exchange)
+    liquidity: float | None = None       # liquidità disponibile
 
 
 class RawMarketSnapshot(BaseModel):

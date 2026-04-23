@@ -68,5 +68,15 @@ module.exports = {
       max_memory_restart: '300M',
       kill_timeout: 10000,
     },
+    {
+      name: 'oddsradar-volume',
+      cwd: '/var/www/oddsradar',
+      script: 'node_modules/.bin/tsx',
+      args: 'scripts/scheduler-volume-flow.ts',
+      env: { NODE_ENV: 'production', VOLUME_INTERVAL_SEC: '300' },
+      autorestart: true,
+      max_memory_restart: '400M',
+      kill_timeout: 10000,
+    },
   ],
 };
