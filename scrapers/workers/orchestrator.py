@@ -10,7 +10,7 @@ import structlog
 from apscheduler.schedulers.blocking import BlockingScheduler
 
 from ..common.queue import push_run_log, push_snapshot
-from ..sources import oddsportal, mozzart, sportybet, superbet, onexbet
+from ..sources import oddsportal, mozzart, sportybet, superbet, onexbet, melbet, soccerbet
 
 log = structlog.get_logger()
 
@@ -43,6 +43,14 @@ def job_1xbet_live() -> None:
     _run_source("1xbet_live", onexbet.fetch_live)
 
 
+def job_melbet_live() -> None:
+    _run_source("melbet_live", melbet.fetch_live)
+
+
+def job_soccerbet_live() -> None:
+    _run_source("soccerbet_live", soccerbet.fetch_live)
+
+
 def job_oddsportal_prematch() -> None:
     _run_source("oddsportal_prematch", lambda: oddsportal.fetch_all())
 
@@ -54,6 +62,10 @@ def main() -> None:
     # Gli altri tre (Mozzart/SportyBet/SuperBet) sono bloccati da Cloudflare;
     # tenuti disabled ma codice pronto per quando avremo proxy residenziali.
     scheduler.add_job(job_1xbet_live, "interval", minutes=2, id="1xbet", max_instances=1, coalesce=True)
+    # melbet via Playwright: più lento, ogni 3 min
+    scheduler.add_job(job_melbet_live, "interval", minutes=3, id="melbet", max_instances=1, coalesce=True)
+    # soccerbet: REST pubblico, ogni 2 min
+    scheduler.add_job(job_soccerbet_live, "interval", minutes=2, id="soccerbet", max_instances=1, coalesce=True)
 
     # OddsPortal prematch: anch'esso rende 0 eventi al momento, lo lascio
     # disabled finché non calibriamo i selettori. Commentato per non sporcare log.
@@ -68,7 +80,10 @@ def main() -> None:
     signal.signal(signal.SIGTERM, shutdown)
 
     log.info("orchestrator.start")
-    job_1xbet_live()  # kickstart solo quello che funziona
+    # Kickstart tutti (staggered via APScheduler jobs)
+    job_1xbet_live()
+    job_soccerbet_live()
+    # melbet è lento, lo lascio partire al primo tick
     scheduler.start()
 
 
