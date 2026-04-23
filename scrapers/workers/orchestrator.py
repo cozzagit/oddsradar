@@ -10,7 +10,7 @@ import structlog
 from apscheduler.schedulers.blocking import BlockingScheduler
 
 from ..common.queue import push_run_log, push_snapshot
-from ..sources import oddsportal, mozzart, sportybet, superbet, onexbet, melbet, soccerbet
+from ..sources import oddsportal, mozzart, sportybet, superbet, onexbet, melbet, soccerbet, betcity
 
 log = structlog.get_logger()
 
@@ -51,6 +51,10 @@ def job_soccerbet_live() -> None:
     _run_source("soccerbet_live", soccerbet.fetch_live)
 
 
+def job_betcity_live() -> None:
+    _run_source("betcity_live", betcity.fetch_live)
+
+
 def job_oddsportal_prematch() -> None:
     _run_source("oddsportal_prematch", lambda: oddsportal.fetch_all())
 
@@ -62,11 +66,8 @@ def main() -> None:
     # Gli altri tre (Mozzart/SportyBet/SuperBet) sono bloccati da Cloudflare;
     # tenuti disabled ma codice pronto per quando avremo proxy residenziali.
     scheduler.add_job(job_1xbet_live, "interval", minutes=2, id="1xbet", max_instances=1, coalesce=True)
-    # melbet Playwright: CF re-challenge sull'API anche dopo bypass landing. Disabled
-    # finché non riscritto per parsare il DOM live (invece di chiamare /service-api/).
-    # scheduler.add_job(job_melbet_live, "interval", minutes=3, id="melbet", max_instances=1, coaleske=True)
-    # soccerbet: path /restapi/ tornano 404. Serve re-scoperta endpoint. Disabled.
-    # scheduler.add_job(job_soccerbet_live, "interval", minutes=2, id="soccerbet", max_instances=1, coalesce=True)
+    # betcity.ru — Playwright DOM parsing, 134 eventi live confermati nel dump.
+    scheduler.add_job(job_betcity_live, "interval", minutes=3, id="betcity", max_instances=1, coalesce=True)
 
     # OddsPortal prematch: anch'esso rende 0 eventi al momento, lo lascio
     # disabled finché non calibriamo i selettori. Commentato per non sporcare log.
@@ -82,6 +83,7 @@ def main() -> None:
 
     log.info("orchestrator.start")
     job_1xbet_live()
+    job_betcity_live()
     scheduler.start()
 
 
