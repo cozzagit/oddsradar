@@ -18,6 +18,7 @@ import {
 export const sourceTierEnum = pgEnum('source_tier', ['easy', 'medium', 'hard']);
 export const signalTypeEnum = pgEnum('signal_type', ['arb', 'value', 'steam', 'bet']);
 export const signalStatusEnum = pgEnum('signal_status', ['active', 'expired', 'consumed']);
+export const signalOutcomeEnum = pgEnum('signal_outcome', ['pending', 'won', 'lost', 'void', 'unknown']);
 export const eventStatusEnum = pgEnum('event_status', [
   'scheduled',
   'in_play',
@@ -232,11 +233,20 @@ export const signals = pgTable(
     status: signalStatusEnum('status').default('active').notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     expiresAt: timestamp('expires_at', { withTimezone: true }),
+    // Learning / ROI tracking
+    outcome: signalOutcomeEnum('outcome').default('pending').notNull(),
+    resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+    actualScoreHome: integer('actual_score_home'),
+    actualScoreAway: integer('actual_score_away'),
+    closingOdd: doublePrecision('closing_odd'),
+    simulatedStake: doublePrecision('simulated_stake'),
+    simulatedProfit: doublePrecision('simulated_profit'),
   },
   (t) => ({
     idxCreated: index('idx_signals_created').on(t.createdAt),
     idxTypeStatus: index('idx_signals_type_status').on(t.type, t.status),
     idxEvent: index('idx_signals_event').on(t.eventId),
+    idxOutcomeResolved: index('idx_signals_outcome_resolved').on(t.outcome, t.resolvedAt),
   }),
 );
 

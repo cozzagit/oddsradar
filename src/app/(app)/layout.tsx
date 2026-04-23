@@ -29,6 +29,9 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           <Link href="/signals" className="hover:text-zinc-100">Segnali</Link>
           <Link href="/events" className="hover:text-zinc-100">Eventi</Link>
           <Link href="/ingestion" className="hover:text-zinc-100">Fonti</Link>
+          {session.user.role === 'admin' && (
+            <Link href="/admin/signals" className="text-amber-400 hover:text-amber-300">Admin</Link>
+          )}
           <Link href="/settings" className="hover:text-zinc-100">Impostazioni</Link>
         </nav>
         <form
