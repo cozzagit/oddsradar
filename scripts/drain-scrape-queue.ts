@@ -42,7 +42,14 @@ type RawSnapshot = {
   kickoff_utc: string;
   markets: Array<{
     market_name: string;
-    selections: Array<{ selection_name: string; odd: number }>;
+    selections: Array<{
+      selection_name: string;
+      odd: number;
+      matched_volume?: number | null;
+      back_best?: number | null;
+      lay_best?: number | null;
+      liquidity?: number | null;
+    }>;
   }>;
   taken_at: string;
   is_in_play?: boolean;
@@ -113,6 +120,49 @@ async function processOne(snap: RawSnapshot): Promise<number> {
 
   if (toInsert.length === 0) return 0;
   await db.insert(schema.oddsSnapshots).values(toInsert);
+
+  // Volume tracking (smart money) — se selezione ha volume/liquidity
+  const volumeInserts: Array<{
+    takenAt: Date;
+    eventId: number;
+    marketId: number;
+    selectionId: number;
+    bookId: number;
+    matchedVolume?: number;
+    backBest?: number;
+    layBest?: number;
+  }> = [];
+  for (const m of snap.markets) {
+    for (const o of m.selections) {
+      if (o.matched_volume == null && o.liquidity == null && o.back_best == null && o.lay_best == null) continue;
+      const mapped = toaMarketSelection(
+        marketsAll,
+        selectionsAll,
+        m.market_name === 'h2h' ? 'h2h' : m.market_name === 'totals' ? 'totals' : 'unknown',
+        o.selection_name,
+        snap.home_team_raw,
+        snap.away_team_raw,
+      );
+      if (!mapped) continue;
+      volumeInserts.push({
+        takenAt,
+        eventId,
+        marketId: mapped.marketId,
+        selectionId: mapped.selectionId,
+        bookId: book.id,
+        matchedVolume: o.matched_volume ?? undefined,
+        backBest: o.back_best ?? undefined,
+        layBest: o.lay_best ?? undefined,
+      });
+    }
+  }
+  if (volumeInserts.length > 0) {
+    try {
+      await db.insert(schema.volumesSnapshots).values(volumeInserts);
+    } catch {
+      // Non bloccare ingest se volume insert fallisce
+    }
+  }
 
   // Event live state (se scraper ha fornito goals/elapsed)
   if (snap.is_in_play && (snap.home_goals != null || snap.elapsed_min != null)) {
