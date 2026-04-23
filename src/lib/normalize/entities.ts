@@ -116,10 +116,12 @@ export function toaMarketSelection(
     const market = markets.find((m) => m.slug === 'match_1x2');
     if (!market) return null;
     const n = outcomeName.trim();
+    const nLow = n.toLowerCase();
     let selSlug: string | null = null;
-    if (n === homeTeamName) selSlug = 'home';
-    else if (n === awayTeamName) selSlug = 'away';
-    else if (/^draw$/i.test(n)) selSlug = 'draw';
+    // Accept both pre-normalized slugs ('home'/'draw'/'away') and team names
+    if (nLow === 'home' || n === homeTeamName) selSlug = 'home';
+    else if (nLow === 'away' || n === awayTeamName) selSlug = 'away';
+    else if (nLow === 'draw' || /^draw$/i.test(n)) selSlug = 'draw';
     if (!selSlug) return null;
     const sel = selections.find((s) => s.marketId === market.id && s.slug === selSlug);
     if (!sel) return null;
@@ -129,7 +131,8 @@ export function toaMarketSelection(
     const market = markets.find((m) => m.slug === 'over_under_2_5');
     if (!market) return null;
     const n = outcomeName.trim().toLowerCase();
-    const selSlug = n.startsWith('over') ? 'over' : n.startsWith('under') ? 'under' : null;
+    const selSlug = n === 'over' || n.startsWith('over') ? 'over'
+      : n === 'under' || n.startsWith('under') ? 'under' : null;
     if (!selSlug) return null;
     const sel = selections.find((s) => s.marketId === market.id && s.slug === selSlug);
     if (!sel) return null;
