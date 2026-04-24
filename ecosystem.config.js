@@ -88,5 +88,15 @@ module.exports = {
       max_memory_restart: '300M',
       kill_timeout: 10000,
     },
+    {
+      name: 'oddsradar-killswitch',
+      cwd: '/var/www/oddsradar',
+      script: 'node_modules/.bin/tsx',
+      args: 'scripts/scheduler-killswitch.ts',
+      env: { NODE_ENV: 'production', KILLSWITCH_INTERVAL_SEC: '3600', KILL_MIN_RESOLVED: '20', KILL_MAX_WR: '0.38' },
+      autorestart: true,
+      max_memory_restart: '300M',
+      kill_timeout: 10000,
+    },
   ],
 };
