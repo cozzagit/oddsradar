@@ -1,8 +1,30 @@
 import { and, eq, gte, isNotNull, lte } from 'drizzle-orm';
 import { db, schema } from '@/lib/db';
+import { isAllowedLeague } from '@/lib/signals/league-filter';
 
 // In-memory cache dei kind disabled (TTL 60s)
 let disabledCache: { set: Set<string>; ts: number } | null = null;
+// Cache event_id → competition_name (TTL 10min)
+const eventCompCache = new Map<number, { name: string; ts: number }>();
+const EVENT_COMP_TTL = 10 * 60_000;
+
+async function getEventCompetition(eventId: number): Promise<string> {
+  const hit = eventCompCache.get(eventId);
+  if (hit && Date.now() - hit.ts < EVENT_COMP_TTL) return hit.name;
+  try {
+    const [row] = await db
+      .select({ name: schema.competitions.name })
+      .from(schema.events)
+      .innerJoin(schema.competitions, eq(schema.competitions.id, schema.events.competitionId))
+      .where(eq(schema.events.id, eventId))
+      .limit(1);
+    const name = row?.name ?? '';
+    eventCompCache.set(eventId, { name, ts: Date.now() });
+    return name;
+  } catch {
+    return '';
+  }
+}
 
 async function getDisabledKinds(): Promise<Set<string>> {
   if (disabledCache && Date.now() - disabledCache.ts < 60_000) return disabledCache.set;
@@ -31,6 +53,10 @@ interface PersistInput {
 
 /** Returns id of new signal or null if a recent duplicate already exists. */
 export async function persistSignalIfNew(input: PersistInput): Promise<number | null> {
+  // League whitelist: solo top europei
+  const competition = await getEventCompetition(input.eventId);
+  if (!isAllowedLeague(competition)) return null;
+
   // Kill-switch check
   const kind = (input.payload?.kind as string) ?? null;
   const kindKey = `${input.type}${kind ? ':' + kind : ''}`;
